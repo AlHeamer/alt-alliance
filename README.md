@@ -1,3 +1,6 @@
+# Alt Alliance
+## Config
+``` SQL
 CREATE TABLE `configs` (
   `neucore_http_scheme`   varchar(255) DEFAULT NULL,
   `neucore_domain`        varchar(255) DEFAULT NULL,
@@ -24,6 +27,24 @@ INSERT INTO `configs` VALUES (
 	'https://hooks.slack.com/services/its/a/webhook',
 	100000000,
 	0,
-	0.5,
+	0.1,
 	20
 );
+```
+
+## Check and ignore lists
+Add an alliance to check:
+
+`INSERT INTO alliance_check_lists VALUES(NULL, {alliance_id});`
+
+Add an individual corp to check:
+
+`INSERT INTO corp_check_lists VALUES(NULL, {corp_id});`
+
+Do not check a corporation, even if it's in a checked alliance or listed in the corp check list:
+
+`INSERT INTO corp_ignore_lists VALUES(NULL, {corp_id});`
+
+## TODO
+* Track corp taxes, fees, and payments
+* Cache endpoint calls
