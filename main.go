@@ -261,7 +261,9 @@ func main() {
 	queueLength = len(allCorps)
 	queue = make(chan int32, queueLength)
 	var corpIgnoreList []corpIgnoreList
+	var charIgnoreList []characterIgnoreList
 	app.DB.Select("corp_id").Find(&corpIgnoreList)
+	app.DB.Select("charaacter_id").Find(&charIgnoreList)
 	for i := 0; i < app.Config.Threads; i++ {
 		wg.Add(1)
 		go func() {
@@ -272,7 +274,7 @@ func main() {
 						continue
 					}
 				}
-				corpVerificationResult := app.verifyCorporation(corpID, startTime)
+				corpVerificationResult := app.verifyCorporation(corpID, &charIgnoreList, startTime)
 
 				mutex.Lock()
 				blocks = append(blocks, createCorpBlocks(corpVerificationResult)...)
@@ -293,7 +295,7 @@ func main() {
 	app.generateAndSendWebhook(startTime, generalErrors, &blocks)
 }
 
-func (app *app) verifyCorporation(corpID int32, startTime time.Time) corpVerificationResult {
+func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnoreList, startTime time.Time) corpVerificationResult {
 	results := corpVerificationResult{CorpID: corpID}
 
 	corpIssues := []string{}
@@ -371,7 +373,9 @@ func (app *app) verifyCorporation(corpID int32, startTime time.Time) corpVerific
 		naughtyMembers := corpMembers[:0]
 		for _, char := range corpMembers {
 			if !characterExistsInNeucore(int64(char), neuCharacters) {
-				naughtyMembers = append(naughtyMembers, char)
+				if !characterIsOnIgnoreList(char, charIgnoreList) {
+					naughtyMembers = append(naughtyMembers, char)
+				}
 			}
 		}
 
@@ -464,6 +468,15 @@ func generateStatusFooterBlock(startTime time.Time, generalErrors []string, bloc
 	execTime := fmt.Sprintf("Completed execution in %f", time.Now().Sub(startTime).Seconds())
 	execFooter := slack.NewTextBlockObject("mrkdwn", str+"\n"+execTime, false, false)
 	*blocks = append(*blocks, slack.NewContextBlock("", execFooter))
+}
+
+func characterIsOnIgnoreList(needle int32, haystack *[]characterIgnoreList) bool {
+	for _, val := range *haystack {
+		if val.CharacterID == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func characterExistsInNeucore(needle int64, haystack []neucoreapi.Character) bool {
