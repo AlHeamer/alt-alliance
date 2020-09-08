@@ -263,7 +263,7 @@ func main() {
 	var corpIgnoreList []corpIgnoreList
 	var charIgnoreList []characterIgnoreList
 	app.DB.Select("corp_id").Find(&corpIgnoreList)
-	app.DB.Select("charaacter_id").Find(&charIgnoreList)
+	app.DB.Select("character_id").Find(&charIgnoreList)
 	for i := 0; i < app.Config.Threads; i++ {
 		wg.Add(1)
 		go func() {
