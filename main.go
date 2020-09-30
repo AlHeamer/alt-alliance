@@ -103,7 +103,7 @@ func (app *app) initDB() {
 	password := ""
 	host := "/tmp/mysql.sock"
 	dbName := "alt_alliance"
-	sqlString := "%s:%s@%s/%s?charset=utf8&parseTime=True&loc=Local"
+	sqlString := "%s:%s@tcp(%s)/%s?charset=utf8&parseTime=True&loc=Local"
 	if u := os.Getenv("DB_USER"); u != "" {
 		user = u
 	}
@@ -138,7 +138,7 @@ func (app *app) initDB() {
 
 func (app *app) initApp() {
 	// Init ESI
-	httpc := &http.Client{Timeout: time.Second * 10}
+	httpc := &http.Client{Timeout: time.Second * 120}
 	app.ESI = goesi.NewAPIClient(httpc, app.Config.EsiUserAgent)
 
 	// Init Neucore ESI Proxy
@@ -382,6 +382,9 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 		numBadMembers := len(naughtyMembers)
 		var naughtyMemberNames []string
 		chunkSize := 5
+		if chunkSize > numBadMembers {
+			chunkSize = numBadMembers
+		}
 		chars := naughtyMembers[0:chunkSize]
 		names, _, err := app.ESI.ESI.UniverseApi.PostUniverseNames(nil, chars, nil)
 		if err != nil {
