@@ -309,18 +309,19 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 		return results
 	}
 	results.CorpName = corpData.Name
-	ceoStringID := optional.NewString(fmt.Sprintf("%d", corpData.CeoId))
-
 	results.Ceo.Id = int64(corpData.CeoId)
 	results.Ceo.Name = fmt.Sprintf("%d", corpData.CeoId)
-	results.CeoMain, _, err = app.Neu.ApplicationCharactersApi.MainV2(app.NeucoreContext, corpData.CeoId)
+	ceoStringID := optional.NewString(results.Ceo.Name)
+
+	neuMain, _, err := app.Neu.ApplicationCharactersApi.MainV2(app.NeucoreContext, corpData.CeoId)
 	if err != nil {
-		logline := fmt.Sprintf("Neu: Error retreiving CEO main. ceoID=%d error=\"%s\"", corpData.CeoId, err.Error())
+		logline := fmt.Sprintf("Neu: Error retreiving CEO's main. ceoID=%d error=\"%s\"", corpData.CeoId, err.Error())
 		log.Print(logline)
 		corpIssues = append(corpIssues, logline)
 		results.Errors = append(results.Errors, corpIssues...)
 		return results
 	}
+	results.CeoMain = neuMain
 
 	///
 	/// Check CEO's notifications (cached 10 minutes)
