@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -452,15 +453,33 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 
 func (app *app) generateAndSendWebhook(startTime time.Time, generalErrors []string, blocks *[]slack.Block) {
 	generateStatusFooterBlock(startTime, generalErrors, blocks)
-	m := slack.Blocks{BlockSet: *blocks}
-	msg := slack.WebhookMessage{
-		Blocks: &m,
-	}
 
-	err := slack.PostWebhook(app.Config.SlackWebhookURL, &msg)
-	if err != nil {
-		log.Printf(err.Error())
+	// slack has a 50 block limit per message, and 1 message per second limit ("burstable.")
+	const blocksPerMessage = 50
+	blockArray := *blocks
+	numBlocks := len(blockArray)
+	for sentBlocks := 0; sentBlocks < numBlocks; sentBlocks += blocksPerMessage {
+		var batch []slack.Block
+		batch = blockArray[sentBlocks:integerMin(sentBlocks+blocksPerMessage, numBlocks)]
+
+		m := slack.Blocks{BlockSet: batch}
+		msg := slack.WebhookMessage{
+			Blocks: &m,
+		}
+
+		err := slack.PostWebhook(app.Config.SlackWebhookURL, &msg)
+		if err != nil {
+			raw, _ := json.Marshal(&msg)
+			log.Printf("Slack POST Webhook error=\"%s\" request=\"%s\"", err.Error(), string(raw))
+		}
 	}
+}
+
+func integerMin(a int, b int) int {
+	if a <= b {
+		return a
+	}
+	return b
 }
 
 func generateStatusFooterBlock(startTime time.Time, generalErrors []string, blocks *[]slack.Block) {
