@@ -296,23 +296,28 @@ func main() {
 
 func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnoreList, startTime time.Time) corpVerificationResult {
 	results := corpVerificationResult{CorpID: corpID}
+	results.Ceo = neucoreapi.Character{Name: "CEO"}
+	results.CeoMain = neucoreapi.Character{Name: "???"}
 
 	corpIssues := []string{}
 	corpData, _, err := app.ESI.ESI.CorporationApi.GetCorporationsCorporationId(nil, corpID, nil)
 	if err != nil {
-		log.Printf("ESI: Error getting public corp info - %s", err.Error())
-		corpIssues = append(corpIssues, "ESI: Error getting public corp info - "+err.Error())
+		logline := fmt.Sprintf("ESI: Error getting public corp info. corpID=%d error=\"%s\"", corpID, err.Error())
+		log.Print(logline)
+		corpIssues = append(corpIssues, logline)
+		results.Errors = append(results.Errors, corpIssues...)
+		return results
 	}
 	results.CorpName = corpData.Name
 	ceoStringID := optional.NewString(fmt.Sprintf("%d", corpData.CeoId))
 
-	results.Ceo = neucoreapi.Character{Id: int64(corpData.CeoId)}
+	results.Ceo.Id = int64(corpData.CeoId)
 	results.Ceo.Name = fmt.Sprintf("%d", corpData.CeoId)
-	results.CeoMain = neucoreapi.Character{}
 	results.CeoMain, _, err = app.Neu.ApplicationCharactersApi.MainV2(app.NeucoreContext, corpData.CeoId)
 	if err != nil {
-		log.Printf("Error retreiving CEO main from Neucore: [%d] %s", corpData.CeoId, err.Error())
-		corpIssues = append(corpIssues, err.Error())
+		logline := fmt.Sprintf("Neu: Error retreiving CEO main. ceoID=%d error=\"%s\"", corpData.CeoId, err.Error())
+		log.Print(logline)
+		corpIssues = append(corpIssues, logline)
 		results.Errors = append(results.Errors, corpIssues...)
 		return results
 	}
@@ -323,7 +328,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 	notificationOps := &esi.GetCharactersCharacterIdNotificationsOpts{Datasource: ceoStringID}
 	notifications, _, err := app.ProxyESI.ESI.CharacterApi.GetCharactersCharacterIdNotifications(app.ProxyAuthContext, corpData.CeoId, notificationOps)
 	if err != nil {
-		log.Printf("Proxy: Error getting ceo notifications - %s", err.Error())
+		log.Printf("Proxy: Error getting ceo notifications corpID=%d ceoID=%d error=\"%s\"", corpID, corpData.CeoId, err.Error())
 	}
 
 	for _, notif := range notifications {
@@ -357,7 +362,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 
 		neuCharacters, _, err := app.Neu.ApplicationCharactersApi.CorporationCharactersV1(app.NeucoreContext, corpID)
 		if err != nil {
-			log.Printf("Neu: Error getting characters corp %d %s", corpID, corpData.Name)
+			log.Printf("Neu: Error getting characters for corp from neucore. corpID=%d error=\"%s\"", corpID, corpData.Name)
 			corpIssues = append(corpIssues, fmt.Sprintf("Neu: Error getting characters for corp %d %s", corpID, corpData.Name))
 		}
 
@@ -365,7 +370,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 		corpMembersOpts := &esi.GetCorporationsCorporationIdMembersOpts{Datasource: ceoStringID}
 		corpMembers, _, err := app.ProxyESI.ESI.CorporationApi.GetCorporationsCorporationIdMembers(app.ProxyAuthContext, corpID, corpMembersOpts)
 		if err != nil {
-			log.Printf("Proxy: Error corp members - %s", err.Error())
+			log.Printf("Proxy: Error getting characters for corp from esi. corpID=%d error=\"%s\"", corpID, err.Error())
 		}
 		log.Printf("Player Characters retrieved after %f", time.Now().Sub(startTime).Seconds())
 
@@ -387,8 +392,9 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 		chars := naughtyMembers[0:chunkSize]
 		names, _, err := app.ESI.ESI.UniverseApi.PostUniverseNames(nil, chars, nil)
 		if err != nil {
-			log.Printf("Error retreiving bulk character names - %s", err.Error())
-			results.Errors = append(results.Errors, "Error retreiving bulk character names - "+err.Error())
+			logline := fmt.Sprintf("Error retreiving bulk character names request=\"%v\" error=\"%s\"", chars, err.Error())
+			log.Print(logline)
+			results.Errors = append(results.Errors, logline)
 		}
 		for _, name := range names {
 			if name.Category != "character" {
