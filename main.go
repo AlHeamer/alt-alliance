@@ -258,7 +258,6 @@ func main() {
 	log.Printf("Alliance Check Complete: %f", allianceCheckComplete.Seconds())
 
 	// check each corp in the alliance
-	separator := slack.NewDividerBlock()
 	queueLength = len(allCorps)
 	queue = make(chan int32, queueLength)
 	var corpIgnoreList []corpIgnoreList
@@ -279,7 +278,6 @@ func main() {
 
 				mutex.Lock()
 				blocks = append(blocks, createCorpBlocks(corpVerificationResult)...)
-				blocks = append(blocks, separator)
 				mutex.Unlock()
 			}
 		}()
@@ -489,6 +487,7 @@ func generateStatusFooterBlock(startTime time.Time, generalErrors []string, bloc
 	}
 	execTime := fmt.Sprintf("Completed execution in %f", time.Now().Sub(startTime).Seconds())
 	execFooter := slack.NewTextBlockObject("mrkdwn", str+"\n"+execTime, false, false)
+	*blocks = append(*blocks, slack.NewDividerBlock())
 	*blocks = append(*blocks, slack.NewContextBlock("", execFooter))
 }
 
@@ -547,7 +546,16 @@ func (app *app) esiHealthCheck() ([]string, error) {
 func createCorpBlocks(results corpVerificationResult) []slack.Block {
 	// iterate errors map
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "*<https://evewho.com/corporation/%d|%s>*", results.CorpID, results.CorpName)
+	fmt.Fprintf(
+		&sb,
+		"*<https://evewho.com/corporation/%d|%s>* [<https://evewho.com/character/%d|%s> - <https://evewho.com/character/%d|%s>]",
+		results.CorpID,
+		results.CorpName,
+		results.Ceo.Id,
+		results.Ceo.Name,
+		results.CeoMain.Id,
+		results.CeoMain.Name,
+	)
 	for _, value := range results.Errors {
 		fmt.Fprintf(&sb, "\n  :octagonal_sign: %s", value)
 	}
@@ -561,18 +569,6 @@ func createCorpBlocks(results corpVerificationResult) []slack.Block {
 	corpIssues := slack.NewTextBlockObject("mrkdwn", sb.String(), false, false)
 	corpImage := slack.NewImageBlockElement(fmt.Sprintf("https://images.evetech.net/corporations/%d/logo", results.CorpID), results.CorpName)
 	corpSection := slack.NewSectionBlock(corpIssues, nil, slack.NewAccessory(corpImage))
-	corpFooter := slack.NewTextBlockObject(
-		"mrkdwn",
-		fmt.Sprintf(
-			"<https://evewho.com/character/%d|CEO: %s> (Main: <https://evewho.com/character/%d|%s>)",
-			results.Ceo.Id,
-			results.Ceo.Name,
-			results.CeoMain.Id,
-			results.CeoMain.Name),
-		false,
-		false,
-	)
-	corpContext := slack.NewContextBlock("", []slack.MixedElement{corpFooter}...)
 
-	return []slack.Block{corpSection, corpContext}
+	return []slack.Block{corpSection}
 }
