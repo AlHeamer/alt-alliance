@@ -295,7 +295,7 @@ func main() {
 }
 
 func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnoreList, startTime time.Time) corpVerificationResult {
-	results := corpVerificationResult{CorpID: corpID}
+	results := corpVerificationResult{CorpID: corpID, CorpName: fmt.Sprintf("Corp %d", corpID)}
 	results.Ceo = neucoreapi.Character{Name: "CEO"}
 	results.CeoMain = neucoreapi.Character{Name: "???"}
 
