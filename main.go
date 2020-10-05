@@ -274,14 +274,15 @@ func main() {
 						continue
 					}
 				}
-				corpVerificationResult := app.verifyCorporation(corpID, &charIgnoreList, startTime)
+				corpResult := app.verifyCorporation(corpID, &charIgnoreList, startTime)
 
-				if len(corpVerificationResult.Errors) > 0 ||
-					len(corpVerificationResult.Warnings) > 0 ||
-					len(corpVerificationResult.Info) > 0 ||
-					len(corpVerificationResult.Status) > 0 {
+				if len(corpResult.Errors) > 0 ||
+					len(corpResult.Warnings) > 0 ||
+					len(corpResult.Info) > 0 ||
+					len(corpResult.Status) > 0 {
+					corpBlocks := createCorpBlocks(corpResult)
 					mutex.Lock()
-					blocks = append(blocks, createCorpBlocks(corpVerificationResult)...)
+					blocks = append(blocks, corpBlocks...)
 					mutex.Unlock()
 				}
 			}
@@ -304,13 +305,11 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 	results.Ceo = neucoreapi.Character{Name: "CEO"}
 	results.CeoMain = neucoreapi.Character{Name: "???"}
 
-	corpIssues := []string{}
 	corpData, _, err := app.ESI.ESI.CorporationApi.GetCorporationsCorporationId(nil, corpID, nil)
 	if err != nil {
 		logline := fmt.Sprintf("ESI: Error getting public corp info. corpID=%d error=\"%s\"", corpID, err.Error())
 		log.Print(logline)
-		corpIssues = append(corpIssues, logline)
-		results.Errors = append(results.Errors, corpIssues...)
+		results.Errors = append(results.Errors, "Error getting public corp info.")
 		return results
 	}
 	results.CorpName = corpData.Name
@@ -324,11 +323,10 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 		log.Print(logline)
 		switch response.StatusCode {
 		case 404:
-			corpIssues = append(corpIssues, "CEO or CEO's main not found in Neucore.")
+			results.Errors = append(results.Errors, "CEO or CEO's main not found in Neucore.")
 		default:
-			corpIssues = append(corpIssues, logline)
+			results.Errors = append(results.Errors, logline)
 		}
-		results.Errors = append(results.Errors, corpIssues...)
 		return results
 	}
 	results.CeoMain = neuMain
@@ -376,17 +374,17 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 	///
 	{
 		if corpData.TaxRate < app.Config.CorpBaseTaxRate {
-			corpIssues = append(corpIssues, fmt.Sprintf("Tax rate is %.f%% (expected at least %.f%%)", corpData.TaxRate*100, app.Config.CorpBaseTaxRate*100))
+			results.Errors = append(results.Errors, fmt.Sprintf("Tax rate is %.f%% (expected at least %.f%%)", corpData.TaxRate*100, app.Config.CorpBaseTaxRate*100))
 		}
 		if corpData.WarEligible {
-			corpIssues = append(corpIssues, "Corporation is War Eligible")
+			results.Errors = append(results.Errors, "Corporation is War Eligible.")
 		}
 		log.Printf("Corp Data retrieved after %f", time.Now().Sub(startTime).Seconds())
 
 		neuCharacters, _, err := app.Neu.ApplicationCharactersApi.CorporationCharactersV1(app.NeucoreContext, corpID)
 		if err != nil {
 			log.Printf("Neu: Error getting characters for corp from neucore. corpID=%d error=\"%s\"", corpID, corpData.Name)
-			corpIssues = append(corpIssues, fmt.Sprintf("Neu: Error getting characters for corp %d %s", corpID, corpData.Name))
+			results.Errors = append(results.Errors, "Error getting characters for from Neucore.")
 		}
 
 		// Datasource changes based on what corp you're querying, use the CEO's charID.
@@ -423,13 +421,14 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 				if name.Category != "character" {
 					continue
 				}
-				naughtyMemberNames = append(naughtyMemberNames, fmt.Sprintf("<https://evewho.com/character/%d|%s>,", name.Id, name.Name))
+				naughtyMemberNames = append(naughtyMemberNames, fmt.Sprintf("<https://evewho.com/character/%d|%s>", name.Id, name.Name))
 			}
 			if numBadMembers > chunkSize {
 				naughtyMemberNames = append(naughtyMemberNames, fmt.Sprintf("and %d more...", numBadMembers-chunkSize))
 			}
+			naughtyMemberString := strings.Join(naughtyMemberNames, ", ")
 
-			corpIssues = append(corpIssues, fmt.Sprintf("Characters with invalid tokens, or not in Neucore: %d/%d\n%v", numBadMembers, corpData.MemberCount, naughtyMemberNames))
+			results.Errors = append(results.Errors, fmt.Sprintf("Characters with invalid tokens, or not in Neucore: %d/%d\n%s", numBadMembers, corpData.MemberCount, naughtyMemberString))
 		}
 
 		log.Printf("Naughty list compiled after %f", time.Now().Sub(startTime).Seconds())
@@ -474,11 +473,10 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 				bountyTotal += entry.Amount
 			}
 		}
-		corpIssues = append(corpIssues, fmt.Sprintf("Bounty Payments Due: %.2f", bountyTotal))
+		results.Errors = append(results.Errors, fmt.Sprintf("Bounty Payments Due: %.2f", bountyTotal))
 		log.Printf("Calculated bounty payments after %f", time.Now().Sub(startTime).Seconds())
 	}
 
-	results.Errors = append(results.Errors, corpIssues...)
 	return results
 }
 
