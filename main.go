@@ -313,11 +313,16 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 	results.Ceo.Name = fmt.Sprintf("%d", corpData.CeoId)
 	ceoStringID := optional.NewString(results.Ceo.Name)
 
-	neuMain, _, err := app.Neu.ApplicationCharactersApi.MainV2(app.NeucoreContext, corpData.CeoId)
+	neuMain, response, err := app.Neu.ApplicationCharactersApi.MainV2(app.NeucoreContext, corpData.CeoId)
 	if err != nil {
 		logline := fmt.Sprintf("Neu: Error retreiving CEO's main. ceoID=%d error=\"%s\"", corpData.CeoId, err.Error())
 		log.Print(logline)
-		corpIssues = append(corpIssues, logline)
+		switch response.StatusCode {
+		case 404:
+			corpIssues = append(corpIssues, "CEO or CEO's main not found in Neucore.")
+		default:
+			corpIssues = append(corpIssues, logline)
+		}
 		results.Errors = append(results.Errors, corpIssues...)
 		return results
 	}
@@ -330,21 +335,33 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 	notifications, _, err := app.ProxyESI.ESI.CharacterApi.GetCharactersCharacterIdNotifications(app.ProxyAuthContext, corpData.CeoId, notificationOps)
 	if err != nil {
 		log.Printf("Proxy: Error getting ceo notifications corpID=%d ceoID=%d error=\"%s\"", corpID, corpData.CeoId, err.Error())
+		results.Warnings = append(results.Warnings, "Error getting CEO's notifications.")
 	}
 
 	for _, notif := range notifications {
+		if notif.Timestamp.Add(time.Hour).Before(time.Now()) {
+			continue
+		}
+
 		msg := ""
-		if notif.Type_ == "CorpBecameWarEligible" {
-			msg = "Became War Eligible"
-		} else if notif.Type_ == "CorpNoLongerWarEligible" {
+		msgLevel := &results.Errors
+		switch notif.Type_ {
+		case "CorpNoLongerWarEligible":
 			msg = "No Longer War Eligible"
+			msgLevel = &results.Info
+		case "CorpBecameWarEligible":
+			msg = "Became War Eligible"
+		case "StructureAnchoring":
+			msg = "Has a structure anchoring"
+		case "StructureOnline":
+			msg = "Has onlined a structure"
 		}
 
 		if msg != "" {
 			y, m, d := notif.Timestamp.Date()
-			h, mm, s := notif.Timestamp.Clock()
-			date := fmt.Sprintf("%d-%d-%d %d:%d:%d", y, m, d, h, mm, s)
-			corpIssues = append(corpIssues, fmt.Sprintf("%s at %s", msg, date))
+			h, mm, _ := notif.Timestamp.Clock()
+			msg = fmt.Sprintf("%s at %4d-%2d-%2d %2d:%2d", msg, y, m, d, h, mm)
+			*msgLevel = append(*msgLevel, msg)
 		}
 	}
 	log.Printf("Parsed CEO's notifications after %f", time.Now().Sub(startTime).Seconds())
@@ -385,27 +402,31 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 		}
 
 		numBadMembers := len(naughtyMembers)
-		var naughtyMemberNames []string
-		chunkSize := 5
-		if chunkSize > numBadMembers {
-			chunkSize = numBadMembers
-		}
-		chars := naughtyMembers[0:chunkSize]
-		names, _, err := app.ESI.ESI.UniverseApi.PostUniverseNames(nil, chars, nil)
-		if err != nil {
-			logline := fmt.Sprintf("Error retreiving bulk character names request=\"%v\" error=\"%s\"", chars, err.Error())
-			log.Print(logline)
-			results.Errors = append(results.Errors, logline)
-		}
-		for _, name := range names {
-			if name.Category != "character" {
-				continue
+		if numBadMembers > 0 {
+			var naughtyMemberNames []string
+			chunkSize := 5
+			if chunkSize > numBadMembers {
+				chunkSize = numBadMembers
 			}
-			naughtyMemberNames = append(naughtyMemberNames, fmt.Sprintf("<https://evewho.com/character/%d|%s>,", name.Id, name.Name))
-		}
-		naughtyMemberNames = append(naughtyMemberNames, fmt.Sprintf(" and %d more...", numBadMembers-chunkSize))
+			chars := naughtyMembers[0:chunkSize]
+			names, _, err := app.ESI.ESI.UniverseApi.PostUniverseNames(nil, chars, nil)
+			if err != nil {
+				log.Printf("Error retreiving bulk character names request=\"%v\" error=\"%s\"", chars, err.Error())
+				results.Info = append(results.Errors, "Error retreiving character names")
+			}
+			for _, name := range names {
+				if name.Category != "character" {
+					continue
+				}
+				naughtyMemberNames = append(naughtyMemberNames, fmt.Sprintf("<https://evewho.com/character/%d|%s>,", name.Id, name.Name))
+			}
+			if numBadMembers > chunkSize {
+				naughtyMemberNames = append(naughtyMemberNames, fmt.Sprintf(" and %d more...", numBadMembers-chunkSize))
+			}
 
-		corpIssues = append(corpIssues, fmt.Sprintf("Characters with invlalid tokens, or not in Neucore: %d/%d\n%v", numBadMembers, corpData.MemberCount, naughtyMemberNames))
+			corpIssues = append(corpIssues, fmt.Sprintf("Characters with invalid tokens, or not in Neucore: %d/%d\n%v", numBadMembers, corpData.MemberCount, naughtyMemberNames))
+		}
+
 		log.Printf("Naughty list compiled after %f", time.Now().Sub(startTime).Seconds())
 	}
 

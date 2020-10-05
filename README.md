@@ -82,7 +82,7 @@ go get ./...
 
 go build
 ```
-You may want to modify how go builds alt-alliance. For example to remove DWARF debugging info `-w`, GO symbols `-s`, and build machine paths `-trimpath`, you would want to run `go build -trimpath=$PWD -ldflags "-s -w"`
+You may want to modify how go builds alt-alliance. For example to remove DWARF debugging info `-w`, GO symbols `-s`, and build machine paths `-trimpath`, you would want to run `go build -gcflags -trimpath=$PWD -ldflags "-s -w"`
 
 ## TODO
 * Track corp taxes, fees, and payments
