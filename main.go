@@ -276,9 +276,14 @@ func main() {
 				}
 				corpVerificationResult := app.verifyCorporation(corpID, &charIgnoreList, startTime)
 
-				mutex.Lock()
-				blocks = append(blocks, createCorpBlocks(corpVerificationResult)...)
-				mutex.Unlock()
+				if len(corpVerificationResult.Errors) > 0 ||
+					len(corpVerificationResult.Warnings) > 0 ||
+					len(corpVerificationResult.Info) > 0 ||
+					len(corpVerificationResult.Status) > 0 {
+					mutex.Lock()
+					blocks = append(blocks, createCorpBlocks(corpVerificationResult)...)
+					mutex.Unlock()
+				}
 			}
 		}()
 	}
@@ -421,7 +426,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 				naughtyMemberNames = append(naughtyMemberNames, fmt.Sprintf("<https://evewho.com/character/%d|%s>,", name.Id, name.Name))
 			}
 			if numBadMembers > chunkSize {
-				naughtyMemberNames = append(naughtyMemberNames, fmt.Sprintf(" and %d more...", numBadMembers-chunkSize))
+				naughtyMemberNames = append(naughtyMemberNames, fmt.Sprintf("and %d more...", numBadMembers-chunkSize))
 			}
 
 			corpIssues = append(corpIssues, fmt.Sprintf("Characters with invalid tokens, or not in Neucore: %d/%d\n%v", numBadMembers, corpData.MemberCount, naughtyMemberNames))
@@ -473,7 +478,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 		log.Printf("Calculated bounty payments after %f", time.Now().Sub(startTime).Seconds())
 	}
 
-	results.Errors = corpIssues
+	results.Errors = append(results.Errors, corpIssues...)
 	return results
 }
 
@@ -576,7 +581,7 @@ func createCorpBlocks(results corpVerificationResult) []slack.Block {
 	var sb strings.Builder
 	fmt.Fprintf(
 		&sb,
-		"*<https://evewho.com/corporation/%d|%s>* [<https://evewho.com/character/%d|%s> - <https://evewho.com/character/%d|%s>]",
+		"*<https://evewho.com/corporation/%d|%s>* [CEO: <https://evewho.com/character/%d|%s> - <https://evewho.com/character/%d|%s>]",
 		results.CorpID,
 		results.CorpName,
 		results.Ceo.Id,
