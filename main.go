@@ -339,8 +339,9 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 		results.Warnings = append(results.Warnings, "Error getting CEO's notifications.")
 	}
 
+	now := time.Now().UTC()
 	for _, notif := range notifications {
-		if notif.Timestamp.Add(time.Hour).Before(time.Now()) {
+		if notif.Timestamp.Add(time.Hour).Before(now) {
 			continue
 		}
 
