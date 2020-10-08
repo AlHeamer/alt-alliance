@@ -96,6 +96,8 @@ type corpVerificationResult struct {
 	Status   []string
 }
 
+const dateFormat = "2006-01-02 15:04"
+
 func (app *app) initDB() {
 	var err error
 
@@ -177,8 +179,7 @@ func main() {
 
 	// Init DB, ESI, Neucore
 	app.initApp()
-	initComplete := time.Now().Sub(startTime)
-	log.Printf("Init Complete: %f", initComplete.Seconds())
+	log.Printf("Init Complete: %f", time.Now().Sub(startTime).Seconds())
 
 	// Perform ESI Health check.
 	var blocks []slack.Block
@@ -214,8 +215,7 @@ func main() {
 			break
 		}
 	}
-	apiCheckComplete := time.Now().Sub(startTime)
-	log.Printf("API Check Complete: %f", apiCheckComplete.Seconds())
+	log.Printf("API Check Complete: %f", time.Now().Sub(startTime).Seconds())
 
 	// Get alliance list or die
 	var allianceCheckList []allianceCheckList
@@ -254,8 +254,7 @@ func main() {
 	}
 	close(queue)
 	wg.Wait()
-	allianceCheckComplete := time.Now().Sub(startTime)
-	log.Printf("Alliance Check Complete: %f", allianceCheckComplete.Seconds())
+	log.Printf("Alliance Check Complete: %f", time.Now().Sub(startTime).Seconds())
 
 	// check each corp in the alliance
 	queueLength = len(allCorps)
@@ -294,8 +293,7 @@ func main() {
 	}
 	close(queue)
 	wg.Wait()
-	corpCheckComplete := time.Now().Sub(startTime)
-	log.Printf("Corp Check Complete: %f", corpCheckComplete.Seconds())
+	log.Printf("Corp Check Complete: %f", time.Now().Sub(startTime).Seconds())
 
 	app.generateAndSendWebhook(startTime, generalErrors, &blocks)
 }
@@ -361,9 +359,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 		}
 
 		if msg != "" {
-			y, m, d := notif.Timestamp.Date()
-			h, mm, _ := notif.Timestamp.Clock()
-			msg = fmt.Sprintf("%s at %4d-%2d-%2d %2d:%2d", msg, y, m, d, h, mm)
+			msg = fmt.Sprintf("%s at %s", msg, notif.Timestamp.Format(dateFormat))
 			*msgLevel = append(*msgLevel, msg)
 		}
 	}
@@ -512,12 +508,8 @@ func integerMin(a int, b int) int {
 }
 
 func generateStatusFooterBlock(startTime time.Time, generalErrors []string, blocks *[]slack.Block) {
-	str := ""
-	for _, g := range generalErrors {
-		str += g
-	}
-	execTime := fmt.Sprintf("Completed execution in %f", time.Now().Sub(startTime).Seconds())
-	execFooter := slack.NewTextBlockObject("mrkdwn", str+"\n"+execTime, false, false)
+	generalErrors = append(generalErrors, fmt.Sprintf("Completed execution in %f", time.Now().Sub(startTime).Seconds()))
+	execFooter := slack.NewTextBlockObject("mrkdwn", strings.Join(generalErrors, "\n"), false, false)
 	*blocks = append(*blocks, slack.NewDividerBlock())
 	*blocks = append(*blocks, slack.NewContextBlock("", execFooter))
 }
