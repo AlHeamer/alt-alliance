@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -119,6 +120,13 @@ func (app *app) initDB() {
 	if n := os.Getenv("DB_NAME"); n != "" {
 		dbName = n
 	}
+
+	flag.StringVar(&user, "u", user, "The username used to access the database.")
+	flag.StringVar(&password, "p", password, "The password for the user.")
+	flag.StringVar(&host, "h", host, "The hostname of the database to connect to (can be a unix socket, ip address, or domain.)")
+	flag.StringVar(&dbName, "d", dbName, "The name of the database to use.")
+	flag.Parse()
+
 	if host[0:1] == "/" {
 		sqlString = "%s:%s@unix(%s)/%s?charset=utf8&parseTime=True&loc=Local"
 	}

@@ -11,12 +11,13 @@
   * slack
   * oauth2
 
-## ENV Vars
+## ENV Vars and command line params
 alt-alliance requires the following environment variables set in order to function:
-* `DB_USER` - The username used to access the database.
-* `DB_PASS` - The password for the user.
-* `DB_HOST` - The hostname of the database to connect to (can be a unix socket, ip address, or domain.)
-* `DB_NAME` - The name of the database to use.
+* `-u` or `DB_USER` - The username used to access the database.
+* `-p` or `DB_PASS` - The password for the user.
+* `-h` or `DB_HOST` - The hostname of the database to connect to (can be a unix socket, ip address, or domain.)
+* `-d` or `DB_NAME` - The name of the database to use.
+Command line params will overwrite ENV Vars.
 
 ## Config
 alt-alliance will auto-create the required tables if they don't exist. If you prefer to create the config table yourself, use the following:
