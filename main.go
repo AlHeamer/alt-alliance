@@ -33,7 +33,7 @@ type config struct {
 	NeucoreAPIBase     string
 	EsiUserAgent       string
 	SlackWebhookURL    string
-	CorpBaseFee        float32
+	CorpBaseFee        float64
 	CorpTaxCharacterID int32
 	CorpTaxCorpID      int32
 	CorpBaseTaxRate    float32
@@ -71,10 +71,12 @@ type characterIgnoreList struct {
 }
 
 type corpTaxOwed struct {
-	CorpID              int32
-	LastTransactionID   int64
-	AmountOwed          float64
-	LastTransactionDate time.Time
+	CorpID               int32
+	LastTransactionID    int64
+	LastPaymentID        int64
+	LastFeeTransactionID int64 // the LastTransactionID when the config.CorpBaseFee was added to AmountOwed
+	AmountOwed           float64
+	LastTransactionDate  time.Time
 }
 
 type corpTaxPaymentLog struct {
@@ -142,8 +144,8 @@ func (app *app) initDB() {
 	app.DB.AutoMigrate(&corpCheckList{})
 	app.DB.AutoMigrate(&corpIgnoreList{})
 	app.DB.AutoMigrate(&characterIgnoreList{})
-	//app.DB.AutoMigrate(&corpTaxOwed{})
-	//app.DB.AutoMigrate(&corpTaxPaymentLog{})
+	app.DB.AutoMigrate(&corpTaxOwed{})
+	app.DB.AutoMigrate(&corpTaxPaymentLog{})
 }
 
 func (app *app) initApp() {
@@ -452,50 +454,95 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 	///
 	/// Run less often, probably once per week (min 1h, max 30d)
 	///
-	if false {
-		y, m, d := time.Now().Date()
-		if d != 1 {
-			results.Errors = append(results.Errors, fmt.Sprintf("Running Monthy Taxes on day %d, expected 1", d))
-		}
+	{
+		const masterWallet = 1 // Taxes always go to master wallet
+		var taxData corpTaxOwed
+		app.DB.FirstOrInit(&taxData, corpTaxOwed{CorpID: corpID})
+		maxTransactionID := taxData.LastTransactionID
+		maxTransactionDate := taxData.LastTransactionDate
 
-		if m == 1 {
-			y--
-		}
-		m--
+		lastUpdateOlderThan24h := taxData.LastTransactionDate.Add(time.Hour * 24).Before(now)
+		itsTheFirst := now.Day() == 1
+		lastTransactionNotToday := now.Day() != taxData.LastTransactionDate.Day() && now.Month() != taxData.LastTransactionDate.Month()
 
-		journalOpts := &esi.GetCorporationsCorporationIdWalletsDivisionJournalOpts{Datasource: ceoStringID}
-		journal, response, err := app.ProxyESI.ESI.WalletApi.GetCorporationsCorporationIdWalletsDivisionJournal(app.ProxyAuthContext, corpID, 1, journalOpts)
-		if err != nil {
-			log.Printf("Proxy: Error reading journal - %s", err.Error())
-		}
-
-		numPages, _ := strconv.Atoi(response.Header.Get("X-Pages"))
-		for i := 1; i < numPages; i++ {
-			page, _, _ := app.ProxyESI.ESI.WalletApi.GetCorporationsCorporationIdWalletsDivisionJournal(app.ProxyAuthContext, corpID, 1, journalOpts)
-			firstOfMonth := time.Date(y, m, 1, 0, 0, 0, 0, time.UTC)
-			lastOfMonth := firstOfMonth.AddDate(0, 1, -1)
-			if page[0].Date.After(firstOfMonth) {
-				continue
+		if lastUpdateOlderThan24h || (itsTheFirst && lastTransactionNotToday) {
+			// Get first page
+			journalOpts := esi.GetCorporationsCorporationIdWalletsDivisionJournalOpts{Datasource: ceoStringID, Page: optional.NewInt32(1)}
+			journal, response, err := app.ProxyESI.ESI.WalletApi.GetCorporationsCorporationIdWalletsDivisionJournal(app.ProxyAuthContext, corpID, masterWallet, &journalOpts)
+			var pageReadIssues []string
+			if err != nil {
+				log.Printf("Proxy: Error reading journal corpID=%d page=%d ceoID=%d error=\"%s\"",
+					corpID,
+					journalOpts.Page.Value(),
+					corpData.CeoId,
+					err.Error(),
+				)
+				pageReadIssues = append(pageReadIssues, fmt.Sprintf("Error reading corp wallet page=%d error=\"%s\"", journalOpts.Page.Value(), err.Error()))
 			}
-			if page[0].Date.Before(lastOfMonth) {
+
+			numPages, _ := strconv.Atoi(response.Header.Get("X-Pages"))
+			for i := 2; i < numPages; i++ {
+				journalOpts.Page = optional.NewInt32(int32(i))
+				page, _, err := app.ProxyESI.ESI.WalletApi.GetCorporationsCorporationIdWalletsDivisionJournal(app.ProxyAuthContext, corpID, masterWallet, &journalOpts)
+				if err != nil {
+					log.Printf("Proxy: Error reading journal corpID=%d page=%d ceoID=%d error=\"%s\"",
+						corpID,
+						journalOpts.Page.Value(),
+						corpData.CeoId,
+						err.Error(),
+					)
+					pageReadIssues = append(pageReadIssues, fmt.Sprintf("Error reading corp wallet page=%d error=\"%s\"", journalOpts.Page.Value(), err.Error()))
+				}
+
+				// Assume pages are sorted by transaction date descending
+				if page[0].Date.Before(taxData.LastTransactionDate) || page[0].Date.Add(time.Hour*24*30).Before(now) {
+					// Don't bother fetching pages that start with transactions older than a month and older than the last transaction date.
+					break
+				}
 				journal = append(journal, page...)
 			}
-		}
+			results.Warnings = append(results.Warnings, strings.Join(pageReadIssues, "\n"))
 
-		bountyTotal := 0.0
-		for _, entry := range journal {
-			if entry.RefType == "bounty_prizes" {
-				bountyTotal += entry.Amount
+			bountyTotal := 0.0
+			for _, entry := range journal {
+				if entry.Id > taxData.LastTransactionID && entry.RefType == "bounty_prizes" {
+					amount := entry.Amount
+					if corpData.TaxRate > app.Config.CorpBaseTaxRate {
+						// calculate the alliance cut.
+						amount = (amount / float64(corpData.TaxRate)) * float64(app.Config.CorpBaseTaxRate)
+					}
+					bountyTotal += amount
+				}
+				maxTransactionID = integer64Max(maxTransactionID, entry.Id)
+				maxTransactionDate = dateMax(maxTransactionDate, entry.Date)
 			}
+			if itsTheFirst && lastTransactionNotToday && taxData.LastFeeTransactionID != taxData.LastTransactionID {
+				bountyTotal += app.Config.CorpBaseFee
+				taxData.LastFeeTransactionID = maxTransactionID
+			}
+
+			if bountyTotal > 0 {
+				log.Printf("Bounty payments added corpID=%d lastDate=\"%s\" lastTransactionID=%d amount=%.2f total=%.2f",
+					corpID,
+					taxData.LastTransactionDate.Format(dateFormat),
+					taxData.LastTransactionID,
+					bountyTotal,
+					bountyTotal+taxData.AmountOwed,
+				)
+			}
+
+			taxData.AmountOwed += bountyTotal
+			taxData.LastTransactionID = maxTransactionID
+			taxData.LastTransactionDate = maxTransactionDate
+			app.DB.Save(&taxData)
 		}
-		results.Errors = append(results.Errors, fmt.Sprintf("Bounty Payments Due: %.2f", bountyTotal))
-		log.Printf("Calculated bounty payments after %f", time.Now().Sub(startTime).Seconds())
 	}
 
 	return results
 }
 
 func (app *app) generateAndSendWebhook(startTime time.Time, generalErrors []string, blocks *[]slack.Block) {
+	return
 	generateStatusFooterBlock(startTime, generalErrors, blocks)
 
 	// slack has a 50 block limit per message, and 1 message per second limit ("burstable.")
@@ -517,13 +564,6 @@ func (app *app) generateAndSendWebhook(startTime time.Time, generalErrors []stri
 			log.Printf("Slack POST Webhook error=\"%s\" request=\"%s\"", err.Error(), string(raw))
 		}
 	}
-}
-
-func integerMin(a int, b int) int {
-	if a <= b {
-		return a
-	}
-	return b
 }
 
 func generateStatusFooterBlock(startTime time.Time, generalErrors []string, blocks *[]slack.Block) {
@@ -610,4 +650,25 @@ func createCorpBlocks(results corpVerificationResult) []slack.Block {
 	corpSection := slack.NewSectionBlock(corpIssues, nil, slack.NewAccessory(corpImage))
 
 	return []slack.Block{corpSection}
+}
+
+func integerMin(a int, b int) int {
+	if a <= b {
+		return a
+	}
+	return b
+}
+
+func integer64Max(a int64, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func dateMax(a time.Time, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
 }
