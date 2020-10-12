@@ -11,63 +11,71 @@
   * slack
   * oauth2
 
-## ENV Vars and command line params
+## ENV Vars and Command Line Params
 alt-alliance requires the following environment variables set in order to function:
 * `-u` or `DB_USER` - The username used to access the database.
 * `-p` or `DB_PASS` - The password for the user.
 * `-h` or `DB_HOST` - The hostname of the database to connect to (can be a unix socket, ip address, or domain.)
 * `-d` or `DB_NAME` - The name of the database to use.
+
 Command line params will overwrite ENV Vars.
 
 ## Config
 alt-alliance will auto-create the required tables if they don't exist. If you prefer to create the config table yourself, use the following:
 ``` SQL
 CREATE TABLE `configs` (
-  `neucore_http_scheme`   varchar(255) DEFAULT NULL,
-  `neucore_domain`        varchar(255) DEFAULT NULL,
-  `neucore_app_id`        int unsigned DEFAULT NULL,
-  `neucore_app_secret`    varchar(255) DEFAULT NULL,
-  `neucore_user_agent`    varchar(255) DEFAULT NULL,
-  `neucore_api_base`      varchar(255) DEFAULT NULL,
-  `esi_user_agent`        varchar(255) DEFAULT NULL,
-  `slack_webhook_url`     varchar(255) DEFAULT NULL,
-  `corp_base_fee`         double DEFAULT NULL,
-  `corp_tax_character_id` int DEFAULT NULL,
-  `corp_base_tax_rate`    double DEFAULT NULL,
-  `threads`               int DEFAULT NULL
+  `neucore_app_id`                     int unsigned DEFAULT NULL,
+  `threads`                            int DEFAULT NULL
+  `corp_tax_character_id`              int DEFAULT NULL,
+  `corp_tax_corp_id`                   int DEFAULT NULL,
+  `corp_base_tax_rate`                 double DEFAULT NULL,
+  `corp_base_fee`                      double DEFAULT NULL,
+  `corp_journal_update_interval_hours` int unsigned DEFAULT NULL,
+  `neucore_http_scheme`                varchar(255) DEFAULT NULL,
+  `neucore_domain`                     varchar(255) DEFAULT NULL,
+  `neucore_app_secret`                 varchar(255) DEFAULT NULL,
+  `neucore_user_agent`                 varchar(255) DEFAULT NULL,
+  `neucore_api_base`                   varchar(255) DEFAULT NULL,
+  `esi_user_agent`                     varchar(255) DEFAULT NULL,
+  `slack_webhook_url`                  varchar(255) DEFAULT NULL,
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 ```
 
 Example configuration:
 ``` SQL
 INSERT INTO `configs` VALUES (
-	'http',
-	'localhost:8080',
-	1,
-	'neucore-secret',
-	'neucore-user-agent',
-	NULL,
-	'esi-user-agent',
-	'https://hooks.slack.com/services/its/a/webhook',
-	100000000,
-	0,
-	0.1,
-	20
+  1,
+  20
+  NULL,
+  NULL,
+  0.1,
+  100000000,
+  1,
+  'http',
+  'localhost:8080',
+  'neucore-secret',
+  'neucore-user-agent',
+  'esi-user-agent',
+  'https://hooks.slack.com/services/its/a/webhook',
 );
 ```
 
-## Check and ignore lists
-Add an alliance to check:
+## Check and Ignore Lists
+Manually add an alliance to check:
 
-`INSERT INTO alliance_check_lists VALUES(NULL, {alliance_id});`
+`INSERT INTO checked_alliances (alliance_id) VALUES({alliance_id});`
 
-Add an individual corp to check:
+Manually add an individual corp to check:
 
-`INSERT INTO corp_check_lists VALUES(NULL, {corp_id});`
+`INSERT INTO checked_corps (corp_id) VALUES({corp_id});`
 
 Do not check a corporation, even if it's in a checked alliance or contained within the corp check list:
 
-`INSERT INTO corp_ignore_lists VALUES(NULL, {corp_id});`
+`INSERT INTO ignored_corps (corp_id) VALUES({corp_id});`
+
+Do not check a corporation, even if it's in a checked alliance or contained within the corp check list:
+
+`INSERT INTO ignored_characters (character_id) VALUES({character_id});`
 
 ## Building
 **NOTE:** exports will vary based on your installation/environment

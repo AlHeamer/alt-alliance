@@ -25,19 +25,20 @@ import (
 )
 
 type config struct {
-	NeucoreHTTPScheme  string
-	NeucoreDomain      string
-	NeucoreAppID       uint
-	NeucoreAppSecret   string
-	NeucoreUserAgent   string
-	NeucoreAPIBase     string
-	EsiUserAgent       string
-	SlackWebhookURL    string
-	CorpBaseFee        float64
-	CorpTaxCharacterID int32
-	CorpTaxCorpID      int32
-	CorpBaseTaxRate    float32
-	Threads            int
+	NeucoreAppID                   uint
+	Threads                        int
+	CorpTaxCharacterID             int32
+	CorpTaxCorpID                  int32
+	CorpBaseTaxRate                float32
+	CorpBaseFee                    float64
+	CorpJournalUpdateIntervalHours uint16
+	NeucoreHTTPScheme              string
+	NeucoreDomain                  string
+	NeucoreAppSecret               string
+	NeucoreUserAgent               string
+	NeucoreAPIBase                 string
+	EsiUserAgent                   string
+	SlackWebhookURL                string
 }
 
 type app struct {
@@ -50,38 +51,39 @@ type app struct {
 	ProxyAuthContext context.Context
 }
 
-type allianceCheckList struct {
-	ID         uint32
+type checkedAlliance struct {
+	gorm.Model
 	AllianceID int32
 }
 
-type corpCheckList struct {
-	ID     uint32
+type checkedCorp struct {
+	gorm.Model
 	CorpID int32
 }
 
-type corpIgnoreList struct {
-	ID     uint32
+type ignoredCorp struct {
+	gorm.Model
 	CorpID int32
 }
 
-type characterIgnoreList struct {
-	ID          uint32
+type ignoredCharacter struct {
+	gorm.Model
 	CharacterID int32
 }
 
-type corpTaxOwed struct {
-	CorpID               int32
+type corpBalance struct {
+	CorpID               int32 `gorm:"PRIMARY_KEY"`
 	LastTransactionID    int64
 	LastPaymentID        int64
-	LastFeeTransactionID int64 // the LastTransactionID when the config.CorpBaseFee was added to AmountOwed
-	AmountOwed           float64
+	LastFeeTransactionID int64   // The LastTransactionID at the time config.CorpBaseFee was added to AmountOwed
+	Balance              float64 // Amount owed to holding corp
 	LastTransactionDate  time.Time
 }
 
-type corpTaxPaymentLog struct {
+type corpTaxPayment struct {
+	gorm.Model
 	CorpID        int32
-	PaymentAmount float32
+	PaymentAmount float64
 	JournalID     int64
 	Date          time.Time
 }
@@ -140,12 +142,12 @@ func (app *app) initDB() {
 	}
 
 	app.DB.AutoMigrate(&config{})
-	app.DB.AutoMigrate(&allianceCheckList{})
-	app.DB.AutoMigrate(&corpCheckList{})
-	app.DB.AutoMigrate(&corpIgnoreList{})
-	app.DB.AutoMigrate(&characterIgnoreList{})
-	app.DB.AutoMigrate(&corpTaxOwed{})
-	app.DB.AutoMigrate(&corpTaxPaymentLog{})
+	app.DB.AutoMigrate(&checkedAlliance{})
+	app.DB.AutoMigrate(&checkedCorp{})
+	app.DB.AutoMigrate(&ignoredCorp{})
+	app.DB.AutoMigrate(&ignoredCharacter{})
+	app.DB.AutoMigrate(&corpBalance{})
+	app.DB.AutoMigrate(&corpTaxPayment{})
 }
 
 func (app *app) initApp() {
@@ -185,6 +187,9 @@ func main() {
 	//app.Config = config{}
 	app.DB.First(&app.Config)
 	app.Config.NeucoreAPIBase = fmt.Sprintf("%s://%s/api", app.Config.NeucoreHTTPScheme, app.Config.NeucoreDomain)
+	if app.Config.CorpJournalUpdateIntervalHours == 0 {
+		app.Config.CorpJournalUpdateIntervalHours = 1
+	}
 
 	// Init DB, ESI, Neucore
 	app.initApp()
@@ -227,8 +232,8 @@ func main() {
 	log.Printf("API Check Complete: %f", time.Now().Sub(startTime).Seconds())
 
 	// Get alliance list or die
-	var allianceCheckList []allianceCheckList
-	var corpCheckList []corpCheckList
+	var allianceCheckList []checkedAlliance
+	var corpCheckList []checkedCorp
 	app.DB.Select("alliance_id").Find(&allianceCheckList)
 	queueLength := len(allianceCheckList)
 	queue := make(chan int32, queueLength)
@@ -268,8 +273,8 @@ func main() {
 	// check each corp in the alliance
 	queueLength = len(allCorps)
 	queue = make(chan int32, queueLength)
-	var corpIgnoreList []corpIgnoreList
-	var charIgnoreList []characterIgnoreList
+	var corpIgnoreList []ignoredCorp
+	var charIgnoreList []ignoredCharacter
 	app.DB.Select("corp_id").Find(&corpIgnoreList)
 	app.DB.Select("character_id").Find(&charIgnoreList)
 	for i := 0; i < app.Config.Threads; i++ {
@@ -308,8 +313,7 @@ func main() {
 	app.generateAndSendWebhook(startTime, generalErrors, &blocks)
 }
 
-func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnoreList, startTime time.Time) corpVerificationResult {
-	now := time.Now()
+func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharacter, startTime time.Time) corpVerificationResult {
 	results := corpVerificationResult{CorpID: corpID, CorpName: fmt.Sprintf("Corp %d", corpID)}
 	results.Ceo = neucoreapi.Character{Name: "CEO"}
 	results.CeoMain = neucoreapi.Character{Name: "???"}
@@ -456,16 +460,16 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 	///
 	{
 		const masterWallet = 1 // Taxes always go to master wallet
-		var taxData corpTaxOwed
-		app.DB.FirstOrInit(&taxData, corpTaxOwed{CorpID: corpID})
+		var taxData corpBalance
+		app.DB.FirstOrInit(&taxData, corpBalance{CorpID: corpID})
 		maxTransactionID := taxData.LastTransactionID
 		maxTransactionDate := taxData.LastTransactionDate
 
-		lastUpdateOlderThan24h := taxData.LastTransactionDate.Add(time.Hour * 24).Before(now)
+		lastUpdateOlderThanInterval := taxData.LastTransactionDate.Add(time.Hour * time.Duration(app.Config.CorpJournalUpdateIntervalHours)).Before(now)
 		itsTheFirst := now.Day() == 1
 		lastTransactionNotToday := now.Day() != taxData.LastTransactionDate.Day() && now.Month() != taxData.LastTransactionDate.Month()
 
-		if lastUpdateOlderThan24h || (itsTheFirst && lastTransactionNotToday) {
+		if lastUpdateOlderThanInterval || (itsTheFirst && lastTransactionNotToday) {
 			// Get first page
 			journalOpts := esi.GetCorporationsCorporationIdWalletsDivisionJournalOpts{Datasource: ceoStringID, Page: optional.NewInt32(1)}
 			journal, response, err := app.ProxyESI.ESI.WalletApi.GetCorporationsCorporationIdWalletsDivisionJournal(app.ProxyAuthContext, corpID, masterWallet, &journalOpts)
@@ -504,18 +508,38 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 			results.Warnings = append(results.Warnings, strings.Join(pageReadIssues, "\n"))
 
 			bountyTotal := 0.0
+			var payments []corpTaxPayment
 			for _, entry := range journal {
-				if entry.Id > taxData.LastTransactionID && entry.RefType == "bounty_prizes" {
-					amount := entry.Amount
-					if corpData.TaxRate > app.Config.CorpBaseTaxRate {
-						// calculate the alliance cut.
-						amount = (amount / float64(corpData.TaxRate)) * float64(app.Config.CorpBaseTaxRate)
+				if entry.Id > taxData.LastTransactionID {
+					switch entry.RefType {
+
+					case "bounty_prizes":
+						amount := entry.Amount
+						if corpData.TaxRate > app.Config.CorpBaseTaxRate {
+							// calculate the alliance cut.
+							amount = (amount / float64(corpData.TaxRate)) * float64(app.Config.CorpBaseTaxRate)
+						}
+						bountyTotal += amount
+
+					case "corporation_account_withdrawl":
+						if entry.SecondPartyId == app.Config.CorpTaxCharacterID ||
+							entry.SecondPartyId == app.Config.CorpTaxCorpID {
+							payment := corpTaxPayment{
+								CorpID:        entry.FirstPartyId,
+								PaymentAmount: entry.Amount,
+								JournalID:     entry.Id,
+								Date:          entry.Date,
+							}
+							bountyTotal -= entry.Amount
+							payments = append(payments, payment)
+						}
 					}
-					bountyTotal += amount
 				}
+
 				maxTransactionID = integer64Max(maxTransactionID, entry.Id)
 				maxTransactionDate = dateMax(maxTransactionDate, entry.Date)
 			}
+
 			if itsTheFirst && lastTransactionNotToday && taxData.LastFeeTransactionID != taxData.LastTransactionID {
 				bountyTotal += app.Config.CorpBaseFee
 				taxData.LastFeeTransactionID = maxTransactionID
@@ -524,17 +548,20 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 			if bountyTotal > 0 {
 				log.Printf("Bounty payments added corpID=%d lastDate=\"%s\" lastTransactionID=%d amount=%.2f total=%.2f",
 					corpID,
-					taxData.LastTransactionDate.Format(dateFormat),
-					taxData.LastTransactionID,
+					maxTransactionDate.Format(dateFormat),
+					maxTransactionID,
 					bountyTotal,
-					bountyTotal+taxData.AmountOwed,
+					bountyTotal+taxData.Balance,
 				)
 			}
 
-			taxData.AmountOwed += bountyTotal
+			taxData.Balance += bountyTotal
 			taxData.LastTransactionID = maxTransactionID
 			taxData.LastTransactionDate = maxTransactionDate
 			app.DB.Save(&taxData)
+			for _, payment := range payments {
+				app.DB.Save(&payment)
+			}
 		}
 	}
 
@@ -542,7 +569,6 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 }
 
 func (app *app) generateAndSendWebhook(startTime time.Time, generalErrors []string, blocks *[]slack.Block) {
-	return
 	generateStatusFooterBlock(startTime, generalErrors, blocks)
 
 	// slack has a 50 block limit per message, and 1 message per second limit ("burstable.")
@@ -573,7 +599,7 @@ func generateStatusFooterBlock(startTime time.Time, generalErrors []string, bloc
 	*blocks = append(*blocks, slack.NewContextBlock("", execFooter))
 }
 
-func characterIsOnIgnoreList(needle int32, haystack *[]characterIgnoreList) bool {
+func characterIsOnIgnoreList(needle int32, haystack *[]ignoredCharacter) bool {
 	for _, val := range *haystack {
 		if val.CharacterID == needle {
 			return true
