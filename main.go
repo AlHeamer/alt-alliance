@@ -91,6 +91,7 @@ type corpTaxPayment struct {
 type corpVerificationResult struct {
 	CorpID   int32
 	CorpName string
+	TaxOwed  float64
 	Ceo      neucoreapi.Character
 	CeoMain  neucoreapi.Character
 	Errors   []string
@@ -277,6 +278,8 @@ func main() {
 	var charIgnoreList []ignoredCharacter
 	app.DB.Select("corp_id").Find(&corpIgnoreList)
 	app.DB.Select("character_id").Find(&charIgnoreList)
+	var totalOwed float64
+	taxMutex := &sync.Mutex{}
 	for i := 0; i < app.Config.Threads; i++ {
 		wg.Add(1)
 		go func() {
@@ -288,6 +291,9 @@ func main() {
 					}
 				}
 				corpResult := app.verifyCorporation(corpID, &charIgnoreList, startTime)
+				taxMutex.Lock()
+				totalOwed += corpResult.TaxOwed
+				taxMutex.Unlock()
 
 				resultWorthLogging := len(corpResult.Errors) > 0 ||
 					len(corpResult.Warnings) > 0 ||
@@ -308,6 +314,9 @@ func main() {
 	}
 	close(queue)
 	wg.Wait()
+	if totalOwed > 1000000000 {
+		generalErrors = append(generalErrors, fmt.Sprintf("Total corp taxes owed=%.f", totalOwed))
+	}
 	log.Printf("Corp Check Complete: %f", time.Now().Sub(startTime).Seconds())
 
 	app.generateAndSendWebhook(startTime, generalErrors, &blocks)
@@ -566,6 +575,8 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 				app.DB.Save(&payment)
 			}
 		}
+
+		results.TaxOwed = taxData.AmountOwed
 	}
 
 	return results
