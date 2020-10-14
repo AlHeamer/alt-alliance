@@ -193,7 +193,7 @@ func main() {
 	var blocks []slack.Block
 	generalErrors, err := app.esiHealthCheck()
 	if err != nil {
-		log.Printf("%s - %s", generalErrors[0], err.Error())
+		log.Printf("%s error=\"%s\"", generalErrors[0], err.Error())
 		app.generateAndSendWebhook(startTime, generalErrors, &blocks)
 		return
 	}
@@ -201,7 +201,7 @@ func main() {
 	// Neucore Roles Check
 	appData, _, err := app.Neu.ApplicationApi.ShowV1(app.NeucoreContext)
 	if err != nil {
-		neucoreError := fmt.Sprintf("Error checking neucore app info - %v", err.Error())
+		neucoreError := fmt.Sprintf("Error checking neucore app info. error=\"%s\"", err.Error())
 		log.Printf(neucoreError)
 		generalErrors = append(generalErrors, neucoreError)
 		app.generateAndSendWebhook(startTime, generalErrors, &blocks)
@@ -245,9 +245,9 @@ func main() {
 			for allianceID := range queue {
 				allianceCorps, _, err := app.ESI.ESI.AllianceApi.GetAlliancesAllianceIdCorporations(nil, allianceID, nil)
 				if err != nil {
-					log.Printf("ESI Error getting alliance corp list for allianceID %d - %v", allianceID, err.Error())
+					logline := fmt.Sprintf("ESI Error getting alliance corp list for allianceID=%d error=\"%s\"", allianceID, err.Error())
 					// dump and exit
-					generalErrors = append(generalErrors, fmt.Sprintf("ESI Error getting alliance corp list for allianceID %d - %v", allianceID, err.Error()))
+					generalErrors = append(generalErrors, logline)
 					break
 				}
 				mutex.Lock()
@@ -344,7 +344,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 	notifications, _, err := app.ProxyESI.ESI.CharacterApi.GetCharactersCharacterIdNotifications(app.ProxyAuthContext, corpData.CeoId, notificationOps)
 	if err != nil {
 		log.Printf("Proxy: Error getting ceo notifications corpID=%d ceoID=%d error=\"%s\"", corpID, corpData.CeoId, err.Error())
-		results.Warnings = append(results.Warnings, "Error getting CEO's notifications.")
+		results.Warnings = append(results.Warnings, fmt.Sprintf("Error getting CEO's notifications. error=\"%s\"", err.Error()))
 	}
 
 	now := time.Now().UTC()
@@ -389,7 +389,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 		neuCharacters, _, err := app.Neu.ApplicationCharactersApi.CorporationCharactersV1(app.NeucoreContext, corpID)
 		if err != nil {
 			log.Printf("Neu: Error getting characters for corp from neucore. corpID=%d error=\"%s\"", corpID, corpData.Name)
-			results.Errors = append(results.Errors, "Error getting characters for from Neucore.")
+			results.Errors = append(results.Errors, fmt.Sprintf("Error getting characters from Neucore. error=\"%s\"", err.Error()))
 		}
 
 		// Datasource changes based on what corp you're querying, use the CEO's charID.
@@ -397,6 +397,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 		corpMembers, _, err := app.ProxyESI.ESI.CorporationApi.GetCorporationsCorporationIdMembers(app.ProxyAuthContext, corpID, corpMembersOpts)
 		if err != nil {
 			log.Printf("Proxy: Error getting characters for corp from esi. corpID=%d error=\"%s\"", corpID, err.Error())
+			results.Errors = append(results.Errors, fmt.Sprintf("Could not fetch member list from esi. error=\"%s\"", err.Error()))
 		}
 		log.Printf("Player Characters retrieved after %f", time.Now().Sub(startTime).Seconds())
 
@@ -420,7 +421,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 			names, _, err := app.ESI.ESI.UniverseApi.PostUniverseNames(nil, chars, nil)
 			if err != nil {
 				log.Printf("Error retreiving bulk character names request=\"%v\" error=\"%s\"", chars, err.Error())
-				results.Info = append(results.Errors, "Error retreiving character names")
+				results.Info = append(results.Info, "Error retreiving character names.")
 			}
 			for _, name := range names {
 				if name.Category != "character" {
