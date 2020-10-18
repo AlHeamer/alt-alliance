@@ -622,6 +622,38 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 				log.Print(logline)
 				results.Errors = append(results.Errors, logline)
 			}
+
+			if itsTheFirst && !feeChargedToday {
+				mail := esi.PostCharactersCharacterIdMailMail{
+					ApprovedCost: 0,
+					Recipients: []esi.PostCharactersCharacterIdMailRecipient{
+						{RecipientId: corpData.CeoId, RecipientType: "character"},
+					},
+					Subject: fmt.Sprintf("Alliance Fee Invoice for %s", now.Format(dateFormat)),
+					Body: fmt.Sprintf(`Greetings,
+  You owe us <font color="#FF00FF00"><b>%.2f</b></font> in cash.
+Pay up your your Fedo gets it.
+
+- Caldari Citizen 18423613498`,
+						taxData.Balance,
+					),
+				}
+
+				mailOpts := esi.PostCharactersCharacterIdMailOpts{Datasource: optional.NewString(fmt.Sprintf("%d", app.Config.CorpTaxCharacterID))}
+				mailID, _, err := app.ProxyESI.ESI.MailApi.PostCharactersCharacterIdMail(app.ProxyAuthContext, app.Config.CorpTaxCharacterID, mail, &mailOpts)
+				if err != nil {
+					log.Printf("Error sending invoice evemail. corpID=%d recipientID=%d senderID=%d balance=%.2f error=\"%s\"",
+						corpID,
+						corpData.CeoId,
+						app.Config.CorpTaxCharacterID,
+						taxData.Balance,
+						err.Error(),
+					)
+					results.Info = append(results.Info, fmt.Sprintf("Failed to send invoice. Balance Due: %.2f", taxData.Balance))
+				} else {
+					log.Printf("Invoice sent via evemail. recipient=%d mailID=%d", corpData.CeoId, mailID)
+				}
+			}
 		}
 
 		results.TaxOwed = taxData.AmountOwed
