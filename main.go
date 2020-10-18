@@ -72,20 +72,21 @@ type ignoredCharacter struct {
 }
 
 type corpBalance struct {
-	CorpID               int32 `gorm:"PRIMARY_KEY"`
-	LastTransactionID    int64
-	LastPaymentID        int64
-	LastFeeTransactionID int64   // The LastTransactionID at the time config.CorpBaseFee was added to AmountOwed
-	Balance              float64 // Amount owed to holding corp
-	LastTransactionDate  time.Time
+	CorpID              int32 `gorm:"PRIMARY_KEY"`
+	LastTransactionID   int64
+	LastPaymentID       int64
+	Balance             float64 // Amount owed to holding corp
+	LastTransactionDate time.Time
+	FeeAddedDate        time.Time
 }
 
 type corpTaxPayment struct {
 	gorm.Model
 	CorpID        int32
-	PaymentAmount float64
 	JournalID     int64
-	Date          time.Time
+	PaymentAmount float64
+	Balance       float64
+	PaymentDate   time.Time
 }
 
 type corpVerificationResult struct {
@@ -477,10 +478,11 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 
 		lastUpdateOlderThanInterval := taxData.LastTransactionDate.Add(time.Hour * time.Duration(app.Config.CorpJournalUpdateIntervalHours)).Before(now)
 		itsTheFirst := now.Day() == 1
-		lastTransactionNotToday := now.Day() != taxData.LastTransactionDate.Day() && now.Month() != taxData.LastTransactionDate.Month()
+		feeChargedToday := now.YearDay() == taxData.FeeAddedDate.YearDay()
 
-		if lastUpdateOlderThanInterval || (itsTheFirst && lastTransactionNotToday) {
+		if lastUpdateOlderThanInterval || (itsTheFirst && !feeChargedToday) {
 			// Get first page
+			journalRolesOk := true
 			journalOpts := esi.GetCorporationsCorporationIdWalletsDivisionJournalOpts{Datasource: ceoStringID, Page: optional.NewInt32(1)}
 			journal, response, err := app.ProxyESI.ESI.WalletApi.GetCorporationsCorporationIdWalletsDivisionJournal(app.ProxyAuthContext, corpID, masterWallet, &journalOpts)
 			var pageReadIssues []string
@@ -491,33 +493,44 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 					corpData.CeoId,
 					err.Error(),
 				)
-				pageReadIssues = append(pageReadIssues, fmt.Sprintf("Error reading corp wallet page=%d error=\"%s\"", journalOpts.Page.Value(), err.Error()))
-			}
-
-			numPages, _ := strconv.Atoi(response.Header.Get("X-Pages"))
-			for i := 2; i < numPages; i++ {
-				journalOpts.Page = optional.NewInt32(int32(i))
-				page, _, err := app.ProxyESI.ESI.WalletApi.GetCorporationsCorporationIdWalletsDivisionJournal(app.ProxyAuthContext, corpID, masterWallet, &journalOpts)
-				if err != nil {
-					log.Printf("Proxy: Error reading journal corpID=%d page=%d ceoID=%d error=\"%s\"",
-						corpID,
-						journalOpts.Page.Value(),
-						corpData.CeoId,
-						err.Error(),
-					)
+				if response.StatusCode == http.StatusForbidden {
+					journalRolesOk = false
+					results.Warnings = append(results.Warnings, "Re-auth corp CEO: Needs ESI scope for wallet journals.")
+				} else {
 					pageReadIssues = append(pageReadIssues, fmt.Sprintf("Error reading corp wallet page=%d error=\"%s\"", journalOpts.Page.Value(), err.Error()))
 				}
-
-				// Assume pages are sorted by transaction date descending
-				if page[0].Date.Before(taxData.LastTransactionDate) || page[0].Date.Add(time.Hour*24*30).Before(now) {
-					// Don't bother fetching pages that start with transactions older than a month and older than the last transaction date.
-					break
-				}
-				journal = append(journal, page...)
 			}
-			results.Warnings = append(results.Warnings, strings.Join(pageReadIssues, "\n"))
+
+			if journalRolesOk == true {
+				numPages, _ := strconv.Atoi(response.Header.Get("X-Pages"))
+				for i := 2; i < numPages; i++ {
+					journalOpts.Page = optional.NewInt32(int32(i))
+					page, _, err := app.ProxyESI.ESI.WalletApi.GetCorporationsCorporationIdWalletsDivisionJournal(app.ProxyAuthContext, corpID, masterWallet, &journalOpts)
+					if err != nil {
+						log.Printf("Proxy: Error reading journal corpID=%d page=%d ceoID=%d error=\"%s\"",
+							corpID,
+							journalOpts.Page.Value(),
+							corpData.CeoId,
+							err.Error(),
+						)
+						pageReadIssues = append(pageReadIssues, fmt.Sprintf("Error reading corp wallet page=%d error=\"%s\"", journalOpts.Page.Value(), err.Error()))
+					}
+
+					// Assume pages are sorted by transaction date descending
+					if page[0].Date.Before(taxData.LastTransactionDate) || page[0].Date.Add(time.Hour*24*30).Before(now) {
+						// Don't bother fetching pages that start with transactions older than a month and older than the last transaction date.
+						break
+					}
+					journal = append(journal, page...)
+				}
+			}
+			if len(pageReadIssues) > 0 {
+				results.Warnings = append(results.Warnings, strings.Join(pageReadIssues, "\n"))
+			}
 
 			bountyTotal := 0.0
+			paymentTotal := 0.0
+			runningBalance := taxData.Balance
 			var payments []corpTaxPayment
 			for _, entry := range journal {
 				if entry.Id > taxData.LastTransactionID {
@@ -530,19 +543,21 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 							amount = (amount / float64(corpData.TaxRate)) * float64(app.Config.CorpBaseTaxRate)
 						}
 						bountyTotal += amount
+						runningBalance += amount
 
 					case "corporation_account_withdrawal":
-						if entry.SecondPartyId == app.Config.CorpTaxCharacterID ||
-							entry.SecondPartyId == app.Config.CorpTaxCorpID {
+						if entry.SecondPartyId == app.Config.CorpTaxCorpID {
 							payment := corpTaxPayment{
 								CorpID:        entry.FirstPartyId,
-								PaymentAmount: -1 * entry.Amount,
 								JournalID:     entry.Id,
-								Date:          entry.Date,
+								PaymentAmount: -1 * entry.Amount,
+								Balance:       runningBalance + entry.Amount, // entry amount is negative. First balance in db could be negative
+								PaymentDate:   entry.Date,
 							}
-							bountyTotal += entry.Amount // entry amount is negative
+							paymentTotal += payment.PaymentAmount
 							payments = append(payments, payment)
 							maxPaymentID = integer64Max(maxPaymentID, payment.JournalID)
+							runningBalance += entry.Amount
 						}
 					}
 				}
@@ -551,28 +566,61 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 				maxTransactionDate = dateMax(maxTransactionDate, entry.Date)
 			}
 
-			if itsTheFirst && lastTransactionNotToday && taxData.LastFeeTransactionID != taxData.LastTransactionID {
-				bountyTotal += app.Config.CorpBaseFee
-				taxData.LastFeeTransactionID = maxTransactionID
-			}
-
-			if bountyTotal > 0 {
-				log.Printf("Bounty payments added corpID=%d lastDate=\"%s\" lastTransactionID=%d amount=%.2f total=%.2f",
+			if bountyTotal > 0 || paymentTotal > 0 {
+				log.Printf(
+					"Corp balance updated. corpID=%d bounties=%.2f payments=%.2f previousBalance=%.2f newBalance=%.2f lastTransactionID=%d lastTransactionDate=\"%s\"",
 					corpID,
-					maxTransactionDate.Format(dateFormat),
-					maxTransactionID,
 					bountyTotal,
-					bountyTotal+taxData.Balance,
+					paymentTotal,
+					taxData.Balance,
+					runningBalance,
+					maxTransactionID,
+					maxTransactionDate,
 				)
 			}
 
-			taxData.Balance += bountyTotal
+			if itsTheFirst && !feeChargedToday {
+				taxData.FeeAddedDate = now
+				runningBalance += app.Config.CorpBaseFee
+				log.Printf("Monthly fee added to balance. corpID=%d date=\"%s\" fee=%.2f balance=%.2f",
+					corpID,
+					now.Format(dateTimeFormat),
+					app.Config.CorpBaseFee,
+					runningBalance,
+				)
+			}
+
+			taxData.Balance = runningBalance
 			taxData.LastTransactionID = maxTransactionID
 			taxData.LastTransactionDate = maxTransactionDate
 			taxData.LastPaymentID = maxPaymentID
-			app.DB.Save(&taxData)
+
+			// for some reason we can't insert multiple rows at once :(
+			//app.DB.Create(&payments)
 			for _, payment := range payments {
-				app.DB.Save(&payment)
+				dbResult := app.DB.Create(&payment)
+				if dbResult.Error != nil {
+					logline := fmt.Sprintf("Error writing corp payment logs to db. corpID=%d journalID=%d error=\"%s\"",
+						corpID,
+						payment.JournalID,
+						dbResult.Error.Error(),
+					)
+					log.Print(logline)
+					results.Errors = append(results.Errors, logline)
+				}
+			}
+
+			if taxData.FeeAddedDate.IsZero() {
+				taxData.FeeAddedDate = time.Date(1970, time.January, 1, 0, 0, 0, 0, time.Local)
+			}
+			dbResult := app.DB.Save(&taxData)
+			if dbResult.Error != nil {
+				logline := fmt.Sprintf("Error writing corp balance to db. corpID=%d error=\"%s\"",
+					corpID,
+					dbResult.Error.Error(),
+				)
+				log.Print(logline)
+				results.Errors = append(results.Errors, logline)
 			}
 		}
 
