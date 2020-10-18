@@ -46,7 +46,6 @@ type app struct {
 	DB               *gorm.DB
 	ESI              *goesi.APIClient
 	ProxyESI         *goesi.APIClient
-	ProxyAuth        *goesi.SSOAuthenticator
 	Neu              *neucoreapi.APIClient
 	NeucoreContext   context.Context
 	ProxyAuthContext context.Context
@@ -97,7 +96,8 @@ type corpVerificationResult struct {
 	Status   []string
 }
 
-const dateFormat = "2006-01-02 15:04"
+const dateFormat = "2006-01-02"
+const dateTimeFormat = "2006-01-02 15:04"
 
 func (app *app) initDB() {
 	var err error
@@ -155,13 +155,13 @@ func (app *app) initApp() {
 	// Init Neucore ESI Proxy
 	app.ProxyESI = goesi.NewAPIClient(httpc, app.Config.NeucoreUserAgent)
 	app.ProxyESI.ChangeBasePath(app.Config.NeucoreAPIBase + "/app/v1/esi")
-	app.ProxyAuth = goesi.NewSSOAuthenticatorV2(httpc, "", "", "", []string{})
+	proxyAuth := goesi.NewSSOAuthenticatorV2(httpc, "", "", "", []string{})
 	proxyToken := &oauth2.Token{
 		AccessToken: base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%d:%s", app.Config.NeucoreAppID, app.Config.NeucoreAppSecret))),
 		TokenType:   "bearer",
 		Expiry:      time.Now().Add(3600 * time.Second),
 	}
-	neucoreTokenSource := app.ProxyAuth.TokenSource(proxyToken)
+	neucoreTokenSource := proxyAuth.TokenSource(proxyToken)
 	app.ProxyAuthContext = context.WithValue(context.Background(), goesi.ContextOAuth2, neucoreTokenSource)
 
 	// Init Neucore API
@@ -328,7 +328,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 		logline := fmt.Sprintf("Neu: Error retreiving CEO's main. ceoID=%d error=\"%s\"", corpData.CeoId, err.Error())
 		log.Print(logline)
 		switch response.StatusCode {
-		case 404:
+		case http.StatusNotFound:
 			results.Errors = append(results.Errors, "CEO or CEO's main not found in Neucore.")
 		default:
 			results.Errors = append(results.Errors, logline)
@@ -341,13 +341,17 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 	/// Check CEO's notifications (cached 10 minutes)
 	///
 	notificationOps := &esi.GetCharactersCharacterIdNotificationsOpts{Datasource: ceoStringID}
-	notifications, _, err := app.ProxyESI.ESI.CharacterApi.GetCharactersCharacterIdNotifications(app.ProxyAuthContext, corpData.CeoId, notificationOps)
+	notifications, response, err := app.ProxyESI.ESI.CharacterApi.GetCharactersCharacterIdNotifications(app.ProxyAuthContext, corpData.CeoId, notificationOps)
 	if err != nil {
 		log.Printf("Proxy: Error getting ceo notifications corpID=%d ceoID=%d error=\"%s\"", corpID, corpData.CeoId, err.Error())
-		results.Warnings = append(results.Warnings, fmt.Sprintf("Error getting CEO's notifications. error=\"%s\"", err.Error()))
+		if response.StatusCode == http.StatusForbidden {
+			results.Warnings = append(results.Warnings, "Re-auth corp CEO: Needs ESI scope for notifications.")
+		} else {
+			results.Warnings = append(results.Warnings, fmt.Sprintf("Error getting CEO's notifications. error=\"%s\"", err.Error()))
+		}
 	}
 
-	now := time.Now().UTC()
+	now := time.Now()
 	for _, notif := range notifications {
 		if notif.Timestamp.Add(time.Hour).Before(now) {
 			continue
@@ -368,7 +372,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 		}
 
 		if msg != "" {
-			msg = fmt.Sprintf("%s at %s", msg, notif.Timestamp.Format(dateFormat))
+			msg = fmt.Sprintf("%s at %s", msg, notif.Timestamp.Format(dateTimeFormat))
 			*msgLevel = append(*msgLevel, msg)
 		}
 	}
@@ -394,10 +398,15 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 
 		// Datasource changes based on what corp you're querying, use the CEO's charID.
 		corpMembersOpts := &esi.GetCorporationsCorporationIdMembersOpts{Datasource: ceoStringID}
-		corpMembers, _, err := app.ProxyESI.ESI.CorporationApi.GetCorporationsCorporationIdMembers(app.ProxyAuthContext, corpID, corpMembersOpts)
+		corpMembers, response, err := app.ProxyESI.ESI.CorporationApi.GetCorporationsCorporationIdMembers(app.ProxyAuthContext, corpID, corpMembersOpts)
 		if err != nil {
-			log.Printf("Proxy: Error getting characters for corp from esi. corpID=%d error=\"%s\"", corpID, err.Error())
-			results.Errors = append(results.Errors, fmt.Sprintf("Could not fetch member list from esi. error=\"%s\"", err.Error()))
+			logline := fmt.Sprintf("Proxy: Error getting characters for corp from esi. corpID=%d error=\"%s\"", corpID, err.Error())
+			log.Printf(logline)
+			if response.StatusCode == http.StatusForbidden {
+				results.Errors = append(results.Errors, "Re-auth corp CEO: Needs ESI scope for member list.")
+			} else {
+				results.Errors = append(results.Errors, logline)
+			}
 		}
 		log.Printf("Player Characters retrieved after %f", time.Now().Sub(startTime).Seconds())
 
