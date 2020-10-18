@@ -26,19 +26,22 @@ import (
 
 type config struct {
 	NeucoreAppID                   uint
-	Threads                        int
+	Threads                        int `gorm:"default:20"`
 	CorpTaxCharacterID             int32
 	CorpTaxCorpID                  int32
 	CorpBaseTaxRate                float32
 	CorpBaseFee                    float64
-	CorpJournalUpdateIntervalHours uint16
-	NeucoreHTTPScheme              string
+	RequestTimeoutInSeconds        int64  `gorm:"default:120"`
+	CorpJournalUpdateIntervalHours uint16 `gorm:"default:24"`
+	NeucoreHTTPScheme              string `gorm:"default:'http'"`
 	NeucoreDomain                  string
 	NeucoreAppSecret               string
 	NeucoreUserAgent               string
 	NeucoreAPIBase                 string
 	EsiUserAgent                   string
 	SlackWebhookURL                string
+	EvemailSubject                 string
+	EvemailBody                    string `gorm:"type:text"`
 }
 
 type app struct {
@@ -77,7 +80,7 @@ type corpBalance struct {
 	LastPaymentID       int64
 	Balance             float64 // Amount owed to holding corp
 	LastTransactionDate time.Time
-	FeeAddedDate        time.Time
+	FeeAddedDate        time.Time `gorm:"default:'1970-01-01 00:00:00'"`
 }
 
 type corpTaxPayment struct {
@@ -154,7 +157,7 @@ func (app *app) initDB() {
 
 func (app *app) initApp() {
 	// Init ESI
-	httpc := &http.Client{Timeout: time.Second * 120}
+	httpc := &http.Client{Timeout: time.Second * time.Duration(app.Config.RequestTimeoutInSeconds)}
 	app.ESI = goesi.NewAPIClient(httpc, app.Config.EsiUserAgent)
 
 	// Init Neucore ESI Proxy
@@ -610,9 +613,6 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 				}
 			}
 
-			if taxData.FeeAddedDate.IsZero() {
-				taxData.FeeAddedDate = time.Date(1970, time.January, 1, 0, 0, 0, 0, time.Local)
-			}
 			dbResult := app.DB.Save(&taxData)
 			if dbResult.Error != nil {
 				logline := fmt.Sprintf("Error writing corp balance to db. corpID=%d error=\"%s\"",
@@ -629,14 +629,8 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 					Recipients: []esi.PostCharactersCharacterIdMailRecipient{
 						{RecipientId: corpData.CeoId, RecipientType: "character"},
 					},
-					Subject: fmt.Sprintf("Alliance Fee Invoice for %s", now.Format(dateFormat)),
-					Body: fmt.Sprintf(`Greetings,
-  You owe us <font color="#FF00FF00"><b>%.2f</b></font> in cash.
-Pay up your your Fedo gets it.
-
-- Caldari Citizen 18423613498`,
-						taxData.Balance,
-					),
+					Subject: fmt.Sprintf(app.Config.EvemailSubject, now.Format(dateFormat)),
+					Body:    fmt.Sprintf(app.Config.EvemailBody, taxData.Balance),
 				}
 
 				mailOpts := esi.PostCharactersCharacterIdMailOpts{Datasource: optional.NewString(fmt.Sprintf("%d", app.Config.CorpTaxCharacterID))}
