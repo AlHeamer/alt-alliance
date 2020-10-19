@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -245,7 +244,7 @@ func main() {
 			for allianceID := range queue {
 				allianceCorps, _, err := app.ESI.ESI.AllianceApi.GetAlliancesAllianceIdCorporations(nil, allianceID, nil)
 				if err != nil {
-					logline := fmt.Sprintf("ESI Error getting alliance corp list for allianceID=%d error=\"%s\"", allianceID, err.Error())
+					logline := fmt.Sprintf("ESI: Error getting alliance corp list for allianceID=%d error=\"%s\"", allianceID, err.Error())
 					// dump and exit
 					generalErrors = append(generalErrors, logline)
 					break
@@ -562,22 +561,28 @@ func (app *app) esiHealthCheck() ([]string, error) {
 
 	for _, endpoint := range status {
 		if endpoint.Status != "green" {
+			usedRoute := false
 			switch endpoint.Route {
 			case "/alliances/{alliance_id}/corporations/": // public,  corp list
+				usedRoute = true
 			case "/corporations/{corporation_id}/": // public,  tax rate
+				usedRoute = true
 			case "/corporations/{corporation_id}/members/": // private, character list
+				usedRoute = true
 			case "/corporations/{corporation_id}/wallets/{division}/journal/": // private, ratting ISK
+				usedRoute = true
 			case "/characters/{character_id}/notifications/": // private, war notifs
-				if err != nil && endpoint.Status == "red" {
-					err = errors.New("one or more endpoint requests are not succeeding and/or are very slow (5s+) on average")
-				}
+				usedRoute = true
+			case "/characters/{character_id}/mail/": // private, evemails
+				usedRoute = true
+			}
 
+			if usedRoute == true {
 				status := ":heart:"
 				if endpoint.Status == "yellow" {
 					status = ":yellow_heart:"
 				}
 				generalErrors = append(generalErrors, fmt.Sprintf("%s `%s`", status, endpoint.Route))
-				break
 			}
 		}
 	}
