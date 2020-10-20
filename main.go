@@ -341,8 +341,11 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 	results.CorpName = corpData.Name
 	results.Ceo.Id = int64(corpData.CeoId)
 	results.Ceo.Name = fmt.Sprintf("%d", corpData.CeoId)
-	ceoStringID := optional.NewString(results.Ceo.Name)
+	log.Printf("Corp Data retrieved after %f", time.Now().Sub(startTime).Seconds())
 
+	///
+	/// Check CEO's notifications (cached 10 minutes)
+	///
 	neuMain, response, err := app.Neu.ApplicationCharactersApi.MainV2(app.NeucoreContext, corpData.CeoId)
 	if err != nil {
 		logline := fmt.Sprintf("Neu: Error retreiving CEO's main. ceoID=%d error=\"%s\"", corpData.CeoId, err.Error())
@@ -357,9 +360,30 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 	}
 	results.CeoMain = neuMain
 
+	app.checkCeoNotifications(corpID, &corpData, &results, now, startTime)
+
 	///
-	/// Check CEO's notifications (cached 10 minutes)
+	/// Check corp info and member lists (cached 1 hour)
 	///
+	if corpData.TaxRate < app.Config.CorpBaseTaxRate {
+		results.Errors = append(results.Errors, fmt.Sprintf("Tax rate is %.f%% (expected at least %.f%%)", corpData.TaxRate*100, app.Config.CorpBaseTaxRate*100))
+	}
+	if corpData.WarEligible {
+		results.Errors = append(results.Errors, "Corporation is War Eligible.")
+	}
+
+	app.discoverNaughtyMembers(corpID, &corpData, &results, charIgnoreList, now, startTime)
+
+	///
+	/// Run less often, probably once per week (min 1h, max 30d)
+	///
+	app.updateBountyBalance(corpID, &corpData, &results, now, startTime)
+
+	return results
+}
+
+func (app *app) checkCeoNotifications(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult, now time.Time, startTime time.Time) {
+	ceoStringID := optional.NewString(results.Ceo.Name)
 	notificationOps := &esi.GetCharactersCharacterIdNotificationsOpts{Datasource: ceoStringID}
 	notifications, response, err := app.ProxyESI.ESI.CharacterApi.GetCharactersCharacterIdNotifications(app.ProxyAuthContext, corpData.CeoId, notificationOps)
 	if err != nil {
@@ -395,265 +419,254 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 			*msgLevel = append(*msgLevel, msg)
 		}
 	}
+
 	log.Printf("Parsed CEO's notifications after %f", time.Now().Sub(startTime).Seconds())
+}
 
-	///
-	/// Check corp info and member lists (cached 1 hour)
-	///
-	{
-		if corpData.TaxRate < app.Config.CorpBaseTaxRate {
-			results.Errors = append(results.Errors, fmt.Sprintf("Tax rate is %.f%% (expected at least %.f%%)", corpData.TaxRate*100, app.Config.CorpBaseTaxRate*100))
+func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult, charIgnoreList *[]ignoredCharacter, now time.Time, startTime time.Time) {
+	// Datasource changes based on what corp you're querying, use the CEO's charID.
+	ceoStringID := optional.NewString(results.Ceo.Name)
+	corpMembersOpts := &esi.GetCorporationsCorporationIdMembersOpts{Datasource: ceoStringID}
+	corpMembers, response, err := app.ProxyESI.ESI.CorporationApi.GetCorporationsCorporationIdMembers(app.ProxyAuthContext, corpID, corpMembersOpts)
+	if err != nil {
+		logline := fmt.Sprintf("Proxy: Error getting characters for corp from esi. corpID=%d error=\"%s\"", corpID, err.Error())
+		log.Printf(logline)
+		if response.StatusCode == http.StatusForbidden {
+			results.Errors = append(results.Errors, "Re-auth corp CEO: Needs ESI scope for member list.")
+		} else {
+			results.Errors = append(results.Errors, logline)
 		}
-		if corpData.WarEligible {
-			results.Errors = append(results.Errors, "Corporation is War Eligible.")
-		}
-		log.Printf("Corp Data retrieved after %f", time.Now().Sub(startTime).Seconds())
+	}
+	log.Printf("ESI Corp Members retrieved after %f", time.Now().Sub(startTime).Seconds())
 
-		neuCharacters, _, err := app.Neu.ApplicationCharactersApi.CorporationCharactersV1(app.NeucoreContext, corpID)
-		if err != nil {
-			log.Printf("Neu: Error getting characters for corp from neucore. corpID=%d error=\"%s\"", corpID, corpData.Name)
-			results.Errors = append(results.Errors, fmt.Sprintf("Error getting characters from Neucore. error=\"%s\"", err.Error()))
-		}
+	// Get member list form Neucore
+	neuCharacters, _, err := app.Neu.ApplicationCharactersApi.CorporationCharactersV1(app.NeucoreContext, corpID)
+	if err != nil {
+		log.Printf("Neu: Error getting characters for corp from neucore. corpID=%d error=\"%s\"", corpID, corpData.Name)
+		results.Errors = append(results.Errors, fmt.Sprintf("Error getting characters from Neucore. error=\"%s\"", err.Error()))
+	}
+	log.Printf("Neucore Corp Members retrieved after %f", time.Now().Sub(startTime).Seconds())
 
-		// Datasource changes based on what corp you're querying, use the CEO's charID.
-		corpMembersOpts := &esi.GetCorporationsCorporationIdMembersOpts{Datasource: ceoStringID}
-		corpMembers, response, err := app.ProxyESI.ESI.CorporationApi.GetCorporationsCorporationIdMembers(app.ProxyAuthContext, corpID, corpMembersOpts)
-		if err != nil {
-			logline := fmt.Sprintf("Proxy: Error getting characters for corp from esi. corpID=%d error=\"%s\"", corpID, err.Error())
-			log.Printf(logline)
-			if response.StatusCode == http.StatusForbidden {
-				results.Errors = append(results.Errors, "Re-auth corp CEO: Needs ESI scope for member list.")
-			} else {
-				results.Errors = append(results.Errors, logline)
+	naughtyMembers := corpMembers[:0]
+	for _, char := range corpMembers {
+		if !characterExistsInNeucore(int64(char), neuCharacters) {
+			if !characterIsOnIgnoreList(char, charIgnoreList) {
+				naughtyMembers = append(naughtyMembers, char)
 			}
 		}
-		log.Printf("Player Characters retrieved after %f", time.Now().Sub(startTime).Seconds())
-
-		naughtyMembers := corpMembers[:0]
-		for _, char := range corpMembers {
-			if !characterExistsInNeucore(int64(char), neuCharacters) {
-				if !characterIsOnIgnoreList(char, charIgnoreList) {
-					naughtyMembers = append(naughtyMembers, char)
-				}
-			}
-		}
-
-		numBadMembers := len(naughtyMembers)
-		if numBadMembers > 0 {
-			var naughtyMemberNames []string
-			chunkSize := 5
-			if chunkSize > numBadMembers {
-				chunkSize = numBadMembers
-			}
-			chars := naughtyMembers[0:chunkSize]
-			names, _, err := app.ESI.ESI.UniverseApi.PostUniverseNames(nil, chars, nil)
-			if err != nil {
-				log.Printf("Error retreiving bulk character names request=\"%v\" error=\"%s\"", chars, err.Error())
-				results.Info = append(results.Info, "Error retreiving character names.")
-			}
-			for _, name := range names {
-				if name.Category != "character" {
-					continue
-				}
-				naughtyMemberNames = append(naughtyMemberNames, fmt.Sprintf("<https://evewho.com/character/%d|%s>", name.Id, name.Name))
-			}
-			if numBadMembers > chunkSize {
-				naughtyMemberNames = append(naughtyMemberNames, fmt.Sprintf("and %d more...", numBadMembers-chunkSize))
-			}
-			naughtyMemberString := strings.Join(naughtyMemberNames, ", ")
-
-			results.Errors = append(results.Errors, fmt.Sprintf("Characters with invalid tokens, or not in Neucore: %d/%d\n%s", numBadMembers, corpData.MemberCount, naughtyMemberString))
-		}
-
-		log.Printf("Naughty list compiled after %f", time.Now().Sub(startTime).Seconds())
 	}
 
-	///
-	/// Run less often, probably once per week (min 1h, max 30d)
-	///
-	{
-		const masterWallet = 1 // Taxes always go to master wallet
-		var taxData corpBalance
-		app.DB.FirstOrInit(&taxData, corpBalance{CorpID: corpID})
-		maxTransactionID := taxData.LastTransactionID
-		maxTransactionDate := taxData.LastTransactionDate
-		maxPaymentID := taxData.LastPaymentID
+	numBadMembers := len(naughtyMembers)
+	if numBadMembers > 0 {
+		var naughtyMemberNames []string
+		chunkSize := 5
+		if chunkSize > numBadMembers {
+			chunkSize = numBadMembers
+		}
+		chars := naughtyMembers[0:chunkSize]
+		names, _, err := app.ESI.ESI.UniverseApi.PostUniverseNames(nil, chars, nil)
+		if err != nil {
+			log.Printf("Error retreiving bulk character names request=\"%v\" error=\"%s\"", chars, err.Error())
+			results.Info = append(results.Info, "Error retreiving character names.")
+		}
+		for _, name := range names {
+			if name.Category != "character" {
+				continue
+			}
+			naughtyMemberNames = append(naughtyMemberNames, fmt.Sprintf("<https://evewho.com/character/%d|%s>", name.Id, name.Name))
+		}
+		if numBadMembers > chunkSize {
+			naughtyMemberNames = append(naughtyMemberNames, fmt.Sprintf("and %d more...", numBadMembers-chunkSize))
+		}
+		naughtyMemberString := strings.Join(naughtyMemberNames, ", ")
 
-		lastUpdateOlderThanInterval := taxData.LastTransactionDate.Add(time.Hour * time.Duration(app.Config.CorpJournalUpdateIntervalHours)).Before(now)
-		itsTheFirst := now.Day() == 1
-		feeChargedToday := now.YearDay() == taxData.FeeAddedDate.YearDay()
+		results.Errors = append(results.Errors, fmt.Sprintf("Characters with invalid tokens, or not in Neucore: %d/%d\n%s", numBadMembers, corpData.MemberCount, naughtyMemberString))
+	}
 
-		if lastUpdateOlderThanInterval || (itsTheFirst && !feeChargedToday) {
-			// Get first page
-			journalRolesOk := true
-			journalOpts := esi.GetCorporationsCorporationIdWalletsDivisionJournalOpts{Datasource: ceoStringID, Page: optional.NewInt32(1)}
-			journal, response, err := app.ProxyESI.ESI.WalletApi.GetCorporationsCorporationIdWalletsDivisionJournal(app.ProxyAuthContext, corpID, masterWallet, &journalOpts)
-			var pageReadIssues []string
-			if err != nil {
-				log.Printf("Proxy: Error reading journal corpID=%d page=%d ceoID=%d error=\"%s\"",
-					corpID,
-					journalOpts.Page.Value(),
-					corpData.CeoId,
-					err.Error(),
-				)
-				if response.StatusCode == http.StatusForbidden {
-					journalRolesOk = false
-					results.Warnings = append(results.Warnings, "Re-auth corp CEO: Needs ESI scope for wallet journals.")
-				} else {
+	log.Printf("Naughty list compiled after %f", time.Now().Sub(startTime).Seconds())
+}
+
+func (app *app) updateBountyBalance(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult, now time.Time, startTime time.Time) {
+	const masterWallet = 1 // Taxes always go to master wallet
+	var taxData corpBalance
+	app.DB.FirstOrInit(&taxData, corpBalance{CorpID: corpID})
+	maxTransactionID := taxData.LastTransactionID
+	maxTransactionDate := taxData.LastTransactionDate
+	maxPaymentID := taxData.LastPaymentID
+
+	lastUpdateOlderThanInterval := taxData.LastTransactionDate.Add(time.Hour * time.Duration(app.Config.CorpJournalUpdateIntervalHours)).Before(now)
+	itsTheFirst := now.Day() == 1
+	feeChargedToday := now.YearDay() == taxData.FeeAddedDate.YearDay()
+
+	if lastUpdateOlderThanInterval || (itsTheFirst && !feeChargedToday) {
+		// Get first page
+		journalRolesOk := true
+		ceoStringID := optional.NewString(results.Ceo.Name)
+		journalOpts := esi.GetCorporationsCorporationIdWalletsDivisionJournalOpts{Datasource: ceoStringID, Page: optional.NewInt32(1)}
+		journal, response, err := app.ProxyESI.ESI.WalletApi.GetCorporationsCorporationIdWalletsDivisionJournal(app.ProxyAuthContext, corpID, masterWallet, &journalOpts)
+		var pageReadIssues []string
+		if err != nil {
+			log.Printf("Proxy: Error reading journal corpID=%d page=%d ceoID=%d error=\"%s\"",
+				corpID,
+				journalOpts.Page.Value(),
+				corpData.CeoId,
+				err.Error(),
+			)
+			if response.StatusCode == http.StatusForbidden {
+				journalRolesOk = false
+				results.Warnings = append(results.Warnings, "Re-auth corp CEO: Needs ESI scope for wallet journals.")
+			} else {
+				pageReadIssues = append(pageReadIssues, fmt.Sprintf("Error reading corp wallet page=%d error=\"%s\"", journalOpts.Page.Value(), err.Error()))
+			}
+		}
+
+		if journalRolesOk == true {
+			numPages, _ := strconv.Atoi(response.Header.Get("X-Pages"))
+			for i := 2; i < numPages; i++ {
+				journalOpts.Page = optional.NewInt32(int32(i))
+				page, _, err := app.ProxyESI.ESI.WalletApi.GetCorporationsCorporationIdWalletsDivisionJournal(app.ProxyAuthContext, corpID, masterWallet, &journalOpts)
+				if err != nil {
+					log.Printf("Proxy: Error reading journal corpID=%d page=%d ceoID=%d error=\"%s\"",
+						corpID,
+						journalOpts.Page.Value(),
+						corpData.CeoId,
+						err.Error(),
+					)
 					pageReadIssues = append(pageReadIssues, fmt.Sprintf("Error reading corp wallet page=%d error=\"%s\"", journalOpts.Page.Value(), err.Error()))
 				}
-			}
 
-			if journalRolesOk == true {
-				numPages, _ := strconv.Atoi(response.Header.Get("X-Pages"))
-				for i := 2; i < numPages; i++ {
-					journalOpts.Page = optional.NewInt32(int32(i))
-					page, _, err := app.ProxyESI.ESI.WalletApi.GetCorporationsCorporationIdWalletsDivisionJournal(app.ProxyAuthContext, corpID, masterWallet, &journalOpts)
-					if err != nil {
-						log.Printf("Proxy: Error reading journal corpID=%d page=%d ceoID=%d error=\"%s\"",
-							corpID,
-							journalOpts.Page.Value(),
-							corpData.CeoId,
-							err.Error(),
-						)
-						pageReadIssues = append(pageReadIssues, fmt.Sprintf("Error reading corp wallet page=%d error=\"%s\"", journalOpts.Page.Value(), err.Error()))
-					}
-
-					// Assume pages are sorted by transaction date descending
-					if page[0].Date.Before(taxData.LastTransactionDate) || page[0].Date.Add(time.Hour*24*30).Before(now) {
-						// Don't bother fetching pages that start with transactions older than a month and older than the last transaction date.
-						break
-					}
-					journal = append(journal, page...)
+				// Assume pages are sorted by transaction date descending
+				if page[0].Date.Before(taxData.LastTransactionDate) || page[0].Date.Add(time.Hour*24*30).Before(now) {
+					// Don't bother fetching pages that start with transactions older than a month and older than the last transaction date.
+					break
 				}
+				journal = append(journal, page...)
 			}
-			if len(pageReadIssues) > 0 {
-				results.Warnings = append(results.Warnings, strings.Join(pageReadIssues, "\n"))
-			}
+		}
+		if len(pageReadIssues) > 0 {
+			results.Warnings = append(results.Warnings, strings.Join(pageReadIssues, "\n"))
+		}
 
-			bountyTotal := 0.0
-			paymentTotal := 0.0
-			runningBalance := taxData.Balance
-			var payments []corpTaxPayment
-			for _, entry := range journal {
-				if entry.Id > taxData.LastTransactionID {
-					switch entry.RefType {
+		bountyTotal := 0.0
+		paymentTotal := 0.0
+		runningBalance := taxData.Balance
+		var payments []corpTaxPayment
+		for _, entry := range journal {
+			if entry.Id > taxData.LastTransactionID {
+				switch entry.RefType {
 
-					case "bounty_prizes":
-						amount := entry.Amount
-						if corpData.TaxRate > app.Config.CorpBaseTaxRate {
-							// calculate the alliance cut.
-							amount = (amount / float64(corpData.TaxRate)) * float64(app.Config.CorpBaseTaxRate)
+				case "bounty_prizes":
+					amount := entry.Amount
+					if corpData.TaxRate > app.Config.CorpBaseTaxRate {
+						// calculate the alliance cut.
+						amount = (amount / float64(corpData.TaxRate)) * float64(app.Config.CorpBaseTaxRate)
+					}
+					bountyTotal += amount
+					runningBalance += amount
+
+				case "corporation_account_withdrawal":
+					if entry.SecondPartyId == app.Config.CorpTaxCorpID {
+						payment := corpTaxPayment{
+							CorpID:        entry.FirstPartyId,
+							JournalID:     entry.Id,
+							PaymentAmount: -1 * entry.Amount,
+							Balance:       runningBalance + entry.Amount, // entry amount is negative. First balance in db could be negative
+							PaymentDate:   entry.Date,
 						}
-						bountyTotal += amount
-						runningBalance += amount
-
-					case "corporation_account_withdrawal":
-						if entry.SecondPartyId == app.Config.CorpTaxCorpID {
-							payment := corpTaxPayment{
-								CorpID:        entry.FirstPartyId,
-								JournalID:     entry.Id,
-								PaymentAmount: -1 * entry.Amount,
-								Balance:       runningBalance + entry.Amount, // entry amount is negative. First balance in db could be negative
-								PaymentDate:   entry.Date,
-							}
-							paymentTotal += payment.PaymentAmount
-							payments = append(payments, payment)
-							maxPaymentID = integer64Max(maxPaymentID, payment.JournalID)
-							runningBalance += entry.Amount
-						}
+						paymentTotal += payment.PaymentAmount
+						payments = append(payments, payment)
+						maxPaymentID = integer64Max(maxPaymentID, payment.JournalID)
+						runningBalance += entry.Amount
 					}
 				}
-
-				maxTransactionID = integer64Max(maxTransactionID, entry.Id)
-				maxTransactionDate = dateMax(maxTransactionDate, entry.Date)
 			}
 
-			if bountyTotal > 0 || paymentTotal > 0 {
-				log.Printf(
-					"Corp balance updated. corpID=%d bounties=%.2f payments=%.2f previousBalance=%.2f newBalance=%.2f lastTransactionID=%d lastTransactionDate=\"%s\"",
-					corpID,
-					bountyTotal,
-					paymentTotal,
-					taxData.Balance,
-					runningBalance,
-					maxTransactionID,
-					maxTransactionDate,
-				)
-			}
+			maxTransactionID = integer64Max(maxTransactionID, entry.Id)
+			maxTransactionDate = dateMax(maxTransactionDate, entry.Date)
+		}
 
-			if itsTheFirst && !feeChargedToday {
-				taxData.FeeAddedDate = now
-				runningBalance += app.Config.CorpBaseFee
-				log.Printf("Monthly fee added to balance. corpID=%d date=\"%s\" fee=%.2f balance=%.2f",
-					corpID,
-					now.Format(dateTimeFormat),
-					app.Config.CorpBaseFee,
-					runningBalance,
-				)
-			}
+		if bountyTotal > 0 || paymentTotal > 0 {
+			log.Printf(
+				"Corp balance updated. corpID=%d bounties=%.2f payments=%.2f previousBalance=%.2f newBalance=%.2f lastTransactionID=%d lastTransactionDate=\"%s\"",
+				corpID,
+				bountyTotal,
+				paymentTotal,
+				taxData.Balance,
+				runningBalance,
+				maxTransactionID,
+				maxTransactionDate,
+			)
+		}
 
-			taxData.Balance = runningBalance
-			taxData.LastTransactionID = maxTransactionID
-			taxData.LastTransactionDate = maxTransactionDate
-			taxData.LastPaymentID = maxPaymentID
+		if itsTheFirst && !feeChargedToday {
+			taxData.FeeAddedDate = now
+			runningBalance += app.Config.CorpBaseFee
+			log.Printf("Monthly fee added to balance. corpID=%d date=\"%s\" fee=%.2f balance=%.2f",
+				corpID,
+				now.Format(dateTimeFormat),
+				app.Config.CorpBaseFee,
+				runningBalance,
+			)
+		}
 
-			// for some reason we can't insert multiple rows at once :(
-			//app.DB.Create(&payments)
-			for _, payment := range payments {
-				dbResult := app.DB.Create(&payment)
-				if dbResult.Error != nil {
-					logline := fmt.Sprintf("Error writing corp payment logs to db. corpID=%d journalID=%d error=\"%s\"",
-						corpID,
-						payment.JournalID,
-						dbResult.Error.Error(),
-					)
-					log.Print(logline)
-					results.Errors = append(results.Errors, logline)
-				}
-			}
+		taxData.Balance = runningBalance
+		taxData.LastTransactionID = maxTransactionID
+		taxData.LastTransactionDate = maxTransactionDate
+		taxData.LastPaymentID = maxPaymentID
 
-			dbResult := app.DB.Save(&taxData)
+		// for some reason we can't insert multiple rows at once :(
+		//app.DB.Create(&payments)
+		for _, payment := range payments {
+			dbResult := app.DB.Create(&payment)
 			if dbResult.Error != nil {
-				logline := fmt.Sprintf("Error writing corp balance to db. corpID=%d error=\"%s\"",
+				logline := fmt.Sprintf("Error writing corp payment logs to db. corpID=%d journalID=%d error=\"%s\"",
 					corpID,
+					payment.JournalID,
 					dbResult.Error.Error(),
 				)
 				log.Print(logline)
 				results.Errors = append(results.Errors, logline)
 			}
-
-			if itsTheFirst && !feeChargedToday {
-				mail := esi.PostCharactersCharacterIdMailMail{
-					ApprovedCost: 0,
-					Recipients: []esi.PostCharactersCharacterIdMailRecipient{
-						{RecipientId: corpData.CeoId, RecipientType: "character"},
-					},
-					Subject: fmt.Sprintf(app.Config.EvemailSubject, now.Format(dateFormat)),
-					Body:    fmt.Sprintf(app.Config.EvemailBody, taxData.Balance),
-				}
-
-				mailOpts := esi.PostCharactersCharacterIdMailOpts{Datasource: optional.NewString(fmt.Sprintf("%d", app.Config.CorpTaxCharacterID))}
-				mailID, _, err := app.ProxyESI.ESI.MailApi.PostCharactersCharacterIdMail(app.ProxyAuthContext, app.Config.CorpTaxCharacterID, mail, &mailOpts)
-				if err != nil {
-					log.Printf("Error sending invoice evemail. corpID=%d recipientID=%d senderID=%d balance=%.2f error=\"%s\"",
-						corpID,
-						corpData.CeoId,
-						app.Config.CorpTaxCharacterID,
-						taxData.Balance,
-						err.Error(),
-					)
-					results.Info = append(results.Info, fmt.Sprintf("Failed to send invoice. Balance Due: %.2f", taxData.Balance))
-				} else {
-					log.Printf("Invoice sent via evemail. recipient=%d mailID=%d", corpData.CeoId, mailID)
-				}
-			}
 		}
 
-		results.TaxOwed = taxData.AmountOwed
+		dbResult := app.DB.Save(&taxData)
+		if dbResult.Error != nil {
+			logline := fmt.Sprintf("Error writing corp balance to db. corpID=%d error=\"%s\"",
+				corpID,
+				dbResult.Error.Error(),
+			)
+			log.Print(logline)
+			results.Errors = append(results.Errors, logline)
+		}
+
+		if itsTheFirst && !feeChargedToday {
+			mail := esi.PostCharactersCharacterIdMailMail{
+				ApprovedCost: 0,
+				Recipients: []esi.PostCharactersCharacterIdMailRecipient{
+					{RecipientId: corpData.CeoId, RecipientType: "character"},
+				},
+				Subject: fmt.Sprintf(app.Config.EvemailSubject, now.Format(dateFormat)),
+				Body:    fmt.Sprintf(app.Config.EvemailBody, taxData.Balance),
+			}
+
+			mailOpts := esi.PostCharactersCharacterIdMailOpts{Datasource: optional.NewString(fmt.Sprintf("%d", app.Config.CorpTaxCharacterID))}
+			mailID, _, err := app.ProxyESI.ESI.MailApi.PostCharactersCharacterIdMail(app.ProxyAuthContext, app.Config.CorpTaxCharacterID, mail, &mailOpts)
+			if err != nil {
+				log.Printf("Error sending invoice evemail. corpID=%d recipientID=%d senderID=%d balance=%.2f error=\"%s\"",
+					corpID,
+					corpData.CeoId,
+					app.Config.CorpTaxCharacterID,
+					taxData.Balance,
+					err.Error(),
+				)
+				results.Info = append(results.Info, fmt.Sprintf("Failed to send invoice. Balance Due: %.2f", taxData.Balance))
+			} else {
+				log.Printf("Invoice sent via evemail. recipient=%d mailID=%d", corpData.CeoId, mailID)
+			}
+		}
 	}
 
-	return results
+	results.TaxOwed = taxData.Balance
 }
 
 func (app *app) generateAndSendWebhook(startTime time.Time, generalErrors []string, blocks *[]slack.Block) {
