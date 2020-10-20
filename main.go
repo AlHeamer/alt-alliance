@@ -464,6 +464,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 		app.DB.FirstOrInit(&taxData, corpBalance{CorpID: corpID})
 		maxTransactionID := taxData.LastTransactionID
 		maxTransactionDate := taxData.LastTransactionDate
+		maxPaymentID := taxData.LastPaymentID
 
 		lastUpdateOlderThanInterval := taxData.LastTransactionDate.Add(time.Hour * time.Duration(app.Config.CorpJournalUpdateIntervalHours)).Before(now)
 		itsTheFirst := now.Day() == 1
@@ -521,17 +522,18 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 						}
 						bountyTotal += amount
 
-					case "corporation_account_withdrawl":
+					case "corporation_account_withdrawal":
 						if entry.SecondPartyId == app.Config.CorpTaxCharacterID ||
 							entry.SecondPartyId == app.Config.CorpTaxCorpID {
 							payment := corpTaxPayment{
 								CorpID:        entry.FirstPartyId,
-								PaymentAmount: entry.Amount,
+								PaymentAmount: -1 * entry.Amount,
 								JournalID:     entry.Id,
 								Date:          entry.Date,
 							}
-							bountyTotal -= entry.Amount
+							bountyTotal += entry.Amount // entry amount is negative
 							payments = append(payments, payment)
+							maxPaymentID = integer64Max(maxPaymentID, payment.JournalID)
 						}
 					}
 				}
@@ -558,6 +560,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 			taxData.Balance += bountyTotal
 			taxData.LastTransactionID = maxTransactionID
 			taxData.LastTransactionDate = maxTransactionDate
+			taxData.LastPaymentID = maxPaymentID
 			app.DB.Save(&taxData)
 			for _, payment := range payments {
 				app.DB.Save(&payment)
