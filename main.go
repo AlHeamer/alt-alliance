@@ -81,6 +81,7 @@ type corpBalance struct {
 	Balance             float64 // Amount owed to holding corp
 	LastTransactionDate time.Time
 	FeeAddedDate        time.Time `gorm:"default:'1970-01-01 00:00:00'"`
+	CorpName            string
 }
 
 type corpTaxPayment struct {
@@ -497,8 +498,8 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 
 func (app *app) updateBountyBalance(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult, now time.Time, startTime time.Time) {
 	const masterWallet = 1 // Taxes always go to master wallet
-	var taxData corpBalance
-	app.DB.FirstOrInit(&taxData, corpBalance{CorpID: corpID})
+	taxData := corpBalance{CorpID: corpID}
+	app.DB.FirstOrInit(&taxData, corpBalance{CorpID: corpID, CorpName: corpData.Name, FeeAddedDate: time.Unix(1, 0)})
 	maxTransactionID := taxData.LastTransactionID
 	maxTransactionDate := taxData.LastTransactionDate
 	maxPaymentID := taxData.LastPaymentID
