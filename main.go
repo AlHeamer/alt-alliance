@@ -25,19 +25,23 @@ import (
 )
 
 type config struct {
-	NeucoreHTTPScheme  string
-	NeucoreDomain      string
-	NeucoreAppID       uint
-	NeucoreAppSecret   string
-	NeucoreUserAgent   string
-	NeucoreAPIBase     string
-	EsiUserAgent       string
-	SlackWebhookURL    string
-	CorpBaseFee        float32
-	CorpTaxCharacterID int32
-	CorpTaxCorpID      int32
-	CorpBaseTaxRate    float32
-	Threads            int
+	NeucoreAppID                   uint
+	Threads                        int `gorm:"default:20"`
+	CorpTaxCharacterID             int32
+	CorpTaxCorpID                  int32
+	CorpBaseTaxRate                float32
+	CorpBaseFee                    float64
+	RequestTimeoutInSeconds        int64  `gorm:"default:120"`
+	CorpJournalUpdateIntervalHours uint16 `gorm:"default:24"`
+	NeucoreHTTPScheme              string `gorm:"default:'http'"`
+	NeucoreDomain                  string
+	NeucoreAppSecret               string
+	NeucoreUserAgent               string
+	NeucoreAPIBase                 string
+	EsiUserAgent                   string
+	SlackWebhookURL                string
+	EvemailSubject                 string
+	EvemailBody                    string `gorm:"type:text"`
 }
 
 type app struct {
@@ -50,43 +54,48 @@ type app struct {
 	ProxyAuthContext context.Context
 }
 
-type allianceCheckList struct {
-	ID         uint32
+type checkedAlliance struct {
+	gorm.Model
 	AllianceID int32
 }
 
-type corpCheckList struct {
-	ID     uint32
+type checkedCorp struct {
+	gorm.Model
 	CorpID int32
 }
 
-type corpIgnoreList struct {
-	ID     uint32
+type ignoredCorp struct {
+	gorm.Model
 	CorpID int32
 }
 
-type characterIgnoreList struct {
-	ID          uint32
+type ignoredCharacter struct {
+	gorm.Model
 	CharacterID int32
 }
 
-type corpTaxOwed struct {
-	CorpID              int32
+type corpBalance struct {
+	CorpID              int32 `gorm:"PRIMARY_KEY"`
 	LastTransactionID   int64
-	AmountOwed          float64
+	LastPaymentID       int64
+	Balance             float64 // Amount owed to holding corp
 	LastTransactionDate time.Time
+	FeeAddedDate        time.Time `gorm:"default:'1970-01-01 00:00:00'"`
 }
 
-type corpTaxPaymentLog struct {
+type corpTaxPayment struct {
+	gorm.Model
 	CorpID        int32
-	PaymentAmount float32
 	JournalID     int64
-	Date          time.Time
+	PaymentAmount float64
+	Balance       float64
+	PaymentDate   time.Time
 }
 
 type corpVerificationResult struct {
 	CorpID   int32
 	CorpName string
+	TaxOwed  float64
 	Ceo      neucoreapi.Character
 	CeoMain  neucoreapi.Character
 	Errors   []string
@@ -94,6 +103,8 @@ type corpVerificationResult struct {
 	Info     []string
 	Status   []string
 }
+
+var requiredRoles = [...]neucoreapi.Role{neucoreapi.APP, neucoreapi.APP_CHARS, neucoreapi.APP_ESI /*, neucoreapi.APP_GROUPS*/}
 
 const dateFormat = "2006-01-02"
 const dateTimeFormat = "2006-01-02 15:04"
@@ -138,17 +149,17 @@ func (app *app) initDB() {
 	}
 
 	app.DB.AutoMigrate(&config{})
-	app.DB.AutoMigrate(&allianceCheckList{})
-	app.DB.AutoMigrate(&corpCheckList{})
-	app.DB.AutoMigrate(&corpIgnoreList{})
-	app.DB.AutoMigrate(&characterIgnoreList{})
-	//app.DB.AutoMigrate(&corpTaxOwed{})
-	//app.DB.AutoMigrate(&corpTaxPaymentLog{})
+	app.DB.AutoMigrate(&checkedAlliance{})
+	app.DB.AutoMigrate(&checkedCorp{})
+	app.DB.AutoMigrate(&ignoredCorp{})
+	app.DB.AutoMigrate(&ignoredCharacter{})
+	app.DB.AutoMigrate(&corpBalance{})
+	app.DB.AutoMigrate(&corpTaxPayment{})
 }
 
 func (app *app) initApp() {
 	// Init ESI
-	httpc := &http.Client{Timeout: time.Second * 120}
+	httpc := &http.Client{Timeout: time.Second * time.Duration(app.Config.RequestTimeoutInSeconds)}
 	app.ESI = goesi.NewAPIClient(httpc, app.Config.EsiUserAgent)
 
 	// Init Neucore ESI Proxy
@@ -158,7 +169,7 @@ func (app *app) initApp() {
 	proxyToken := &oauth2.Token{
 		AccessToken: base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%d:%s", app.Config.NeucoreAppID, app.Config.NeucoreAppSecret))),
 		TokenType:   "bearer",
-		Expiry:      time.Now().Add(3600 * time.Second),
+		Expiry:      time.Now().Add(httpc.Timeout),
 	}
 	neucoreTokenSource := proxyAuth.TokenSource(proxyToken)
 	app.ProxyAuthContext = context.WithValue(context.Background(), goesi.ContextOAuth2, neucoreTokenSource)
@@ -177,14 +188,16 @@ func main() {
 	log.Printf("Starting process...")
 	startTime := time.Now()
 
-	// configure
+	// Init DB and load config
 	var app app
 	app.initDB()
-	//app.Config = config{}
 	app.DB.First(&app.Config)
 	app.Config.NeucoreAPIBase = fmt.Sprintf("%s://%s/api", app.Config.NeucoreHTTPScheme, app.Config.NeucoreDomain)
+	if app.Config.CorpJournalUpdateIntervalHours == 0 {
+		app.Config.CorpJournalUpdateIntervalHours = 1
+	}
 
-	// Init DB, ESI, Neucore
+	// Init ESI, Neucore
 	app.initApp()
 	log.Printf("Init Complete: %f", time.Now().Sub(startTime).Seconds())
 
@@ -192,13 +205,12 @@ func main() {
 	var blocks []slack.Block
 	generalErrors, err := app.esiHealthCheck()
 	if err != nil {
-		log.Printf("%s error=\"%s\"", generalErrors[0], err.Error())
 		app.generateAndSendWebhook(startTime, generalErrors, &blocks)
 		return
 	}
 
 	// Neucore Roles Check
-	appData, _, err := app.Neu.ApplicationApi.ShowV1(app.NeucoreContext)
+	neucoreAppData, _, err := app.Neu.ApplicationApi.ShowV1(app.NeucoreContext)
 	if err != nil {
 		neucoreError := fmt.Sprintf("Error checking neucore app info. error=\"%s\"", err.Error())
 		log.Printf(neucoreError)
@@ -207,35 +219,38 @@ func main() {
 		return
 	}
 
-	requiredRoles := []neucoreapi.Role{neucoreapi.APP, neucoreapi.APP_CHARS, neucoreapi.APP_ESI /*, neucoreapi.APP_GROUPS*/}
 	for _, rr := range requiredRoles {
 		success := false
-		for _, role := range appData.Roles {
+		for _, role := range neucoreAppData.Roles {
 			if rr == role {
 				success = true
 			}
 		}
 		if !success {
 			// dump and die
-			msg := fmt.Sprintf("Neucore Config Error - Missing Roles:\nGiven: %v\nReq'd: %v", appData.Roles, requiredRoles)
+			msg := fmt.Sprintf("Neucore Config Error - Missing Roles:\nGiven: %v\nReq'd: %v", neucoreAppData.Roles, requiredRoles)
 			log.Print(msg)
-			break
+			generalErrors = append(generalErrors, msg)
+			app.generateAndSendWebhook(startTime, generalErrors, &blocks)
+			return
 		}
 	}
 	log.Printf("API Check Complete: %f", time.Now().Sub(startTime).Seconds())
 
-	// Get alliance list or die
-	var allianceCheckList []allianceCheckList
-	var corpCheckList []corpCheckList
+	// Compile a list of all corps to check
+	var allCorps []int32
+	var corpCheckList []checkedCorp
+	app.DB.Select("corp_id").Find(&corpCheckList)
+	for _, corp := range corpCheckList {
+		allCorps = append(allCorps, corp.CorpID)
+	}
+
+	// Get alliance's corp list
+	var allianceCheckList []checkedAlliance
 	app.DB.Select("alliance_id").Find(&allianceCheckList)
 	queueLength := len(allianceCheckList)
 	queue := make(chan int32, queueLength)
 	mutex := &sync.Mutex{}
-	app.DB.Select("corp_id").Find(&corpCheckList)
-	var allCorps []int32
-	for _, corp := range corpCheckList {
-		allCorps = append(allCorps, corp.CorpID)
-	}
 	wg := sync.WaitGroup{}
 	for i := 0; i < app.Config.Threads; i++ {
 		wg.Add(1)
@@ -266,10 +281,12 @@ func main() {
 	// check each corp in the alliance
 	queueLength = len(allCorps)
 	queue = make(chan int32, queueLength)
-	var corpIgnoreList []corpIgnoreList
-	var charIgnoreList []characterIgnoreList
+	var corpIgnoreList []ignoredCorp
+	var charIgnoreList []ignoredCharacter
 	app.DB.Select("corp_id").Find(&corpIgnoreList)
 	app.DB.Select("character_id").Find(&charIgnoreList)
+	var totalOwed float64
+	taxMutex := &sync.Mutex{}
 	for i := 0; i < app.Config.Threads; i++ {
 		wg.Add(1)
 		go func() {
@@ -280,7 +297,11 @@ func main() {
 						continue
 					}
 				}
+
 				corpResult := app.verifyCorporation(corpID, &charIgnoreList, startTime)
+				taxMutex.Lock()
+				totalOwed += corpResult.TaxOwed
+				taxMutex.Unlock()
 
 				resultWorthLogging := len(corpResult.Errors) > 0 ||
 					len(corpResult.Warnings) > 0 ||
@@ -301,17 +322,24 @@ func main() {
 	}
 	close(queue)
 	wg.Wait()
+	if totalOwed > 2000000000 {
+		generalErrors = append(generalErrors, fmt.Sprintf("Total corp taxes owed=%.f", totalOwed))
+	}
 	log.Printf("Corp Check Complete: %f", time.Now().Sub(startTime).Seconds())
 
 	app.generateAndSendWebhook(startTime, generalErrors, &blocks)
 }
 
-func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnoreList, startTime time.Time) corpVerificationResult {
+func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharacter, startTime time.Time) corpVerificationResult {
 	now := time.Now()
-	results := corpVerificationResult{CorpID: corpID, CorpName: fmt.Sprintf("Corp %d", corpID)}
-	results.Ceo = neucoreapi.Character{Name: "CEO"}
-	results.CeoMain = neucoreapi.Character{Name: "???"}
+	results := corpVerificationResult{
+		CorpID:   corpID,
+		CorpName: fmt.Sprintf("Corp %d", corpID),
+		Ceo:      neucoreapi.Character{Name: "CEO"},
+		CeoMain:  neucoreapi.Character{Name: "???"},
+	}
 
+	// Get public corp data
 	corpData, _, err := app.ESI.ESI.CorporationApi.GetCorporationsCorporationId(nil, corpID, nil)
 	if err != nil {
 		logline := fmt.Sprintf("ESI: Error getting public corp info. corpID=%d error=\"%s\"", corpID, err.Error())
@@ -322,8 +350,9 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 	results.CorpName = corpData.Name
 	results.Ceo.Id = int64(corpData.CeoId)
 	results.Ceo.Name = fmt.Sprintf("%d", corpData.CeoId)
-	ceoStringID := optional.NewString(results.Ceo.Name)
+	log.Printf("Corp Data retrieved after %f", time.Now().Sub(startTime).Seconds())
 
+	// Get CEO info from neucore
 	neuMain, response, err := app.Neu.ApplicationCharactersApi.MainV2(app.NeucoreContext, corpData.CeoId)
 	if err != nil {
 		logline := fmt.Sprintf("Neu: Error retreiving CEO's main. ceoID=%d error=\"%s\"", corpData.CeoId, err.Error())
@@ -341,6 +370,29 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 	///
 	/// Check CEO's notifications (cached 10 minutes)
 	///
+	app.checkCeoNotifications(corpID, &corpData, &results, now, startTime)
+
+	///
+	/// Check corp info and member lists (cached 1 hour)
+	///
+	if corpData.TaxRate < app.Config.CorpBaseTaxRate {
+		results.Errors = append(results.Errors, fmt.Sprintf("Tax rate is %.f%% (expected at least %.f%%)", corpData.TaxRate*100, app.Config.CorpBaseTaxRate*100))
+	}
+	if corpData.WarEligible {
+		results.Errors = append(results.Errors, "Corporation is War Eligible.")
+	}
+	app.discoverNaughtyMembers(corpID, &corpData, &results, charIgnoreList, now, startTime)
+
+	///
+	/// Read corp wallet and update owed balance. Should run less often (min 1h, max 30d)
+	///
+	app.updateBountyBalance(corpID, &corpData, &results, now, startTime)
+
+	return results
+}
+
+func (app *app) checkCeoNotifications(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult, now time.Time, startTime time.Time) {
+	ceoStringID := optional.NewString(results.Ceo.Name)
 	notificationOps := &esi.GetCharactersCharacterIdNotificationsOpts{Datasource: ceoStringID}
 	notifications, response, err := app.ProxyESI.ESI.CharacterApi.GetCharactersCharacterIdNotifications(app.ProxyAuthContext, corpData.CeoId, notificationOps)
 	if err != nil {
@@ -361,10 +413,10 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 		msgLevel := &results.Errors
 		switch notif.Type_ {
 		case "CorpNoLongerWarEligible":
-			msg = "No Longer War Eligible"
+			msg = "No longer war eligible"
 			msgLevel = &results.Info
 		case "CorpBecameWarEligible":
-			msg = "Became War Eligible"
+			msg = "Became war eligible"
 		case "StructureAnchoring":
 			msg = "Has a structure anchoring"
 		case "StructureOnline":
@@ -376,123 +428,256 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 			*msgLevel = append(*msgLevel, msg)
 		}
 	}
+
 	log.Printf("Parsed CEO's notifications after %f", time.Now().Sub(startTime).Seconds())
+}
 
-	///
-	/// Check corp info and member lists (cached 1 hour)
-	///
-	{
-		if corpData.TaxRate < app.Config.CorpBaseTaxRate {
-			results.Errors = append(results.Errors, fmt.Sprintf("Tax rate is %.f%% (expected at least %.f%%)", corpData.TaxRate*100, app.Config.CorpBaseTaxRate*100))
+func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult, charIgnoreList *[]ignoredCharacter, now time.Time, startTime time.Time) {
+	// Datasource changes based on what corp you're querying, use the CEO's charID.
+	ceoStringID := optional.NewString(results.Ceo.Name)
+	corpMembersOpts := &esi.GetCorporationsCorporationIdMembersOpts{Datasource: ceoStringID}
+	corpMembers, response, err := app.ProxyESI.ESI.CorporationApi.GetCorporationsCorporationIdMembers(app.ProxyAuthContext, corpID, corpMembersOpts)
+	if err != nil {
+		logline := fmt.Sprintf("Proxy: Error getting characters for corp from esi. corpID=%d error=\"%s\"", corpID, err.Error())
+		log.Printf(logline)
+		if response.StatusCode == http.StatusForbidden {
+			results.Errors = append(results.Errors, "Re-auth corp CEO: Needs ESI scope for member list.")
+		} else {
+			results.Errors = append(results.Errors, logline)
 		}
-		if corpData.WarEligible {
-			results.Errors = append(results.Errors, "Corporation is War Eligible.")
-		}
-		log.Printf("Corp Data retrieved after %f", time.Now().Sub(startTime).Seconds())
+	}
+	log.Printf("ESI Corp Members retrieved after %f", time.Now().Sub(startTime).Seconds())
 
-		neuCharacters, _, err := app.Neu.ApplicationCharactersApi.CorporationCharactersV1(app.NeucoreContext, corpID)
-		if err != nil {
-			log.Printf("Neu: Error getting characters for corp from neucore. corpID=%d error=\"%s\"", corpID, corpData.Name)
-			results.Errors = append(results.Errors, fmt.Sprintf("Error getting characters from Neucore. error=\"%s\"", err.Error()))
-		}
+	// Get member list form Neucore
+	neuCharacters, _, err := app.Neu.ApplicationCharactersApi.CorporationCharactersV1(app.NeucoreContext, corpID)
+	if err != nil {
+		log.Printf("Neu: Error getting characters for corp from neucore. corpID=%d error=\"%s\"", corpID, corpData.Name)
+		results.Errors = append(results.Errors, fmt.Sprintf("Error getting characters from Neucore. error=\"%s\"", err.Error()))
+	}
+	log.Printf("Neucore Corp Members retrieved after %f", time.Now().Sub(startTime).Seconds())
 
-		// Datasource changes based on what corp you're querying, use the CEO's charID.
-		corpMembersOpts := &esi.GetCorporationsCorporationIdMembersOpts{Datasource: ceoStringID}
-		corpMembers, response, err := app.ProxyESI.ESI.CorporationApi.GetCorporationsCorporationIdMembers(app.ProxyAuthContext, corpID, corpMembersOpts)
-		if err != nil {
-			logline := fmt.Sprintf("Proxy: Error getting characters for corp from esi. corpID=%d error=\"%s\"", corpID, err.Error())
-			log.Printf(logline)
-			if response.StatusCode == http.StatusForbidden {
-				results.Errors = append(results.Errors, "Re-auth corp CEO: Needs ESI scope for member list.")
-			} else {
-				results.Errors = append(results.Errors, logline)
+	naughtyMembers := corpMembers[:0]
+	for _, char := range corpMembers {
+		if !characterExistsInNeucore(int64(char), neuCharacters) {
+			if !characterIsOnIgnoreList(char, charIgnoreList) {
+				naughtyMembers = append(naughtyMembers, char)
 			}
 		}
-		log.Printf("Player Characters retrieved after %f", time.Now().Sub(startTime).Seconds())
-
-		naughtyMembers := corpMembers[:0]
-		for _, char := range corpMembers {
-			if !characterExistsInNeucore(int64(char), neuCharacters) {
-				if !characterIsOnIgnoreList(char, charIgnoreList) {
-					naughtyMembers = append(naughtyMembers, char)
-				}
-			}
-		}
-
-		numBadMembers := len(naughtyMembers)
-		if numBadMembers > 0 {
-			var naughtyMemberNames []string
-			chunkSize := 5
-			if chunkSize > numBadMembers {
-				chunkSize = numBadMembers
-			}
-			chars := naughtyMembers[0:chunkSize]
-			names, _, err := app.ESI.ESI.UniverseApi.PostUniverseNames(nil, chars, nil)
-			if err != nil {
-				log.Printf("Error retreiving bulk character names request=\"%v\" error=\"%s\"", chars, err.Error())
-				results.Info = append(results.Info, "Error retreiving character names.")
-			}
-			for _, name := range names {
-				if name.Category != "character" {
-					continue
-				}
-				naughtyMemberNames = append(naughtyMemberNames, fmt.Sprintf("<https://evewho.com/character/%d|%s>", name.Id, name.Name))
-			}
-			if numBadMembers > chunkSize {
-				naughtyMemberNames = append(naughtyMemberNames, fmt.Sprintf("and %d more...", numBadMembers-chunkSize))
-			}
-			naughtyMemberString := strings.Join(naughtyMemberNames, ", ")
-
-			results.Errors = append(results.Errors, fmt.Sprintf("Characters with invalid tokens, or not in Neucore: %d/%d\n%s", numBadMembers, corpData.MemberCount, naughtyMemberString))
-		}
-
-		log.Printf("Naughty list compiled after %f", time.Now().Sub(startTime).Seconds())
 	}
 
-	///
-	/// Run less often, probably once per week (min 1h, max 30d)
-	///
-	if false {
-		y, m, d := time.Now().Date()
-		if d != 1 {
-			results.Errors = append(results.Errors, fmt.Sprintf("Running Monthy Taxes on day %d, expected 1", d))
+	numBadMembers := len(naughtyMembers)
+	if numBadMembers > 0 {
+		var naughtyMemberNames []string
+		chunkSize := 5
+		if chunkSize > numBadMembers {
+			chunkSize = numBadMembers
 		}
-
-		if m == 1 {
-			y--
-		}
-		m--
-
-		journalOpts := &esi.GetCorporationsCorporationIdWalletsDivisionJournalOpts{Datasource: ceoStringID}
-		journal, response, err := app.ProxyESI.ESI.WalletApi.GetCorporationsCorporationIdWalletsDivisionJournal(app.ProxyAuthContext, corpID, 1, journalOpts)
+		chars := naughtyMembers[0:chunkSize]
+		names, _, err := app.ESI.ESI.UniverseApi.PostUniverseNames(nil, chars, nil)
 		if err != nil {
-			log.Printf("Proxy: Error reading journal - %s", err.Error())
+			log.Printf("Error retreiving bulk character names request=\"%v\" error=\"%s\"", chars, err.Error())
+			results.Info = append(results.Info, "Error retreiving character names.")
 		}
-
-		numPages, _ := strconv.Atoi(response.Header.Get("X-Pages"))
-		for i := 1; i < numPages; i++ {
-			page, _, _ := app.ProxyESI.ESI.WalletApi.GetCorporationsCorporationIdWalletsDivisionJournal(app.ProxyAuthContext, corpID, 1, journalOpts)
-			firstOfMonth := time.Date(y, m, 1, 0, 0, 0, 0, time.UTC)
-			lastOfMonth := firstOfMonth.AddDate(0, 1, -1)
-			if page[0].Date.After(firstOfMonth) {
+		for _, name := range names {
+			if name.Category != "character" {
 				continue
 			}
-			if page[0].Date.Before(lastOfMonth) {
-				journal = append(journal, page...)
-			}
+			naughtyMemberNames = append(naughtyMemberNames, fmt.Sprintf("<https://evewho.com/character/%d|%s>", name.Id, name.Name))
 		}
+		if numBadMembers > chunkSize {
+			naughtyMemberNames = append(naughtyMemberNames, fmt.Sprintf("and %d more...", numBadMembers-chunkSize))
+		}
+		naughtyMemberString := strings.Join(naughtyMemberNames, ", ")
 
-		bountyTotal := 0.0
-		for _, entry := range journal {
-			if entry.RefType == "bounty_prizes" {
-				bountyTotal += entry.Amount
-			}
-		}
-		results.Errors = append(results.Errors, fmt.Sprintf("Bounty Payments Due: %.2f", bountyTotal))
-		log.Printf("Calculated bounty payments after %f", time.Now().Sub(startTime).Seconds())
+		results.Errors = append(results.Errors, fmt.Sprintf("Characters with invalid tokens, or not in Neucore: %d/%d\n%s", numBadMembers, corpData.MemberCount, naughtyMemberString))
 	}
 
-	return results
+	log.Printf("Naughty list compiled after %f", time.Now().Sub(startTime).Seconds())
+}
+
+func (app *app) updateBountyBalance(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult, now time.Time, startTime time.Time) {
+	const masterWallet = 1 // Taxes always go to master wallet
+	var taxData corpBalance
+	app.DB.FirstOrInit(&taxData, corpBalance{CorpID: corpID})
+	maxTransactionID := taxData.LastTransactionID
+	maxTransactionDate := taxData.LastTransactionDate
+	maxPaymentID := taxData.LastPaymentID
+
+	lastUpdateOlderThanInterval := taxData.LastTransactionDate.Add(time.Hour * time.Duration(app.Config.CorpJournalUpdateIntervalHours)).Before(now)
+	itsTheFirst := now.Day() == 1
+	feeChargedToday := now.YearDay() == taxData.FeeAddedDate.YearDay()
+
+	if !lastUpdateOlderThanInterval && !(itsTheFirst && !feeChargedToday) {
+		return
+	}
+
+	// Get first page
+	journalRolesOk := true
+	ceoStringID := optional.NewString(results.Ceo.Name)
+	journalOpts := esi.GetCorporationsCorporationIdWalletsDivisionJournalOpts{Datasource: ceoStringID, Page: optional.NewInt32(1)}
+	journal, response, err := app.ProxyESI.ESI.WalletApi.GetCorporationsCorporationIdWalletsDivisionJournal(app.ProxyAuthContext, corpID, masterWallet, &journalOpts)
+	var pageReadIssues []string
+	if err != nil {
+		log.Printf("Proxy: Error reading journal corpID=%d page=%d ceoID=%d error=\"%s\"",
+			corpID,
+			journalOpts.Page.Value(),
+			corpData.CeoId,
+			err.Error(),
+		)
+		if response.StatusCode == http.StatusForbidden {
+			journalRolesOk = false
+			results.Warnings = append(results.Warnings, "Re-auth corp CEO: Needs ESI scope for wallet journals.")
+		} else {
+			pageReadIssues = append(pageReadIssues, fmt.Sprintf("Error reading corp wallet page=%d error=\"%s\"", journalOpts.Page.Value(), err.Error()))
+		}
+	}
+
+	if journalRolesOk == true {
+		numPages, _ := strconv.Atoi(response.Header.Get("X-Pages"))
+		for i := 2; i < numPages; i++ {
+			journalOpts.Page = optional.NewInt32(int32(i))
+			page, _, err := app.ProxyESI.ESI.WalletApi.GetCorporationsCorporationIdWalletsDivisionJournal(app.ProxyAuthContext, corpID, masterWallet, &journalOpts)
+			if err != nil {
+				log.Printf("Proxy: Error reading journal corpID=%d page=%d ceoID=%d error=\"%s\"",
+					corpID,
+					journalOpts.Page.Value(),
+					corpData.CeoId,
+					err.Error(),
+				)
+				pageReadIssues = append(pageReadIssues, fmt.Sprintf("Error reading corp wallet page=%d error=\"%s\"", journalOpts.Page.Value(), err.Error()))
+			}
+
+			// Assume pages are sorted by transaction date descending
+			if page[0].Date.Before(taxData.LastTransactionDate) || page[0].Date.Add(time.Hour*24*30).Before(now) {
+				// Don't bother fetching pages that start with transactions older than a month and older than the last transaction date.
+				break
+			}
+			journal = append(journal, page...)
+		}
+	}
+	if len(pageReadIssues) > 0 {
+		results.Warnings = append(results.Warnings, strings.Join(pageReadIssues, "\n"))
+	}
+
+	bountyTotal := 0.0
+	paymentTotal := 0.0
+	runningBalance := taxData.Balance
+	var payments []corpTaxPayment
+	for _, entry := range journal {
+		if entry.Id > taxData.LastTransactionID {
+			switch entry.RefType {
+
+			case "bounty_prizes":
+				amount := entry.Amount
+				if corpData.TaxRate > app.Config.CorpBaseTaxRate {
+					// calculate the alliance cut.
+					amount = (amount / float64(corpData.TaxRate)) * float64(app.Config.CorpBaseTaxRate)
+				}
+				bountyTotal += amount
+				runningBalance += amount
+
+			case "corporation_account_withdrawal":
+				if entry.SecondPartyId == app.Config.CorpTaxCorpID {
+					payment := corpTaxPayment{
+						CorpID:        entry.FirstPartyId,
+						JournalID:     entry.Id,
+						PaymentAmount: -1 * entry.Amount,
+						Balance:       runningBalance + entry.Amount, // entry amount is negative. First balance in db could be negative
+						PaymentDate:   entry.Date,
+					}
+					paymentTotal += payment.PaymentAmount
+					payments = append(payments, payment)
+					maxPaymentID = integer64Max(maxPaymentID, payment.JournalID)
+					runningBalance += entry.Amount
+				}
+			}
+		}
+
+		maxTransactionID = integer64Max(maxTransactionID, entry.Id)
+		maxTransactionDate = dateMax(maxTransactionDate, entry.Date)
+	}
+
+	if bountyTotal > 0 || paymentTotal > 0 {
+		log.Printf(
+			"Corp balance updated. corpID=%d bounties=%.2f payments=%.2f previousBalance=%.2f newBalance=%.2f lastTransactionID=%d lastTransactionDate=\"%s\"",
+			corpID,
+			bountyTotal,
+			paymentTotal,
+			taxData.Balance,
+			runningBalance,
+			maxTransactionID,
+			maxTransactionDate,
+		)
+	}
+
+	// Add monthly fee and send invoice via evemail
+	if itsTheFirst && !feeChargedToday {
+		taxData.FeeAddedDate = now
+		runningBalance += app.Config.CorpBaseFee
+		log.Printf("Monthly fee added to balance. corpID=%d date=\"%s\" fee=%.2f balance=%.2f",
+			corpID,
+			now.Format(dateTimeFormat),
+			app.Config.CorpBaseFee,
+			runningBalance,
+		)
+
+		mail := esi.PostCharactersCharacterIdMailMail{
+			ApprovedCost: 0,
+			Recipients: []esi.PostCharactersCharacterIdMailRecipient{
+				{RecipientId: corpData.CeoId, RecipientType: "character"},
+			},
+			Subject: fmt.Sprintf(app.Config.EvemailSubject, now.Format(dateFormat)),
+			Body:    fmt.Sprintf(app.Config.EvemailBody, fmt.Sprintf("%.f", taxData.Balance)),
+		}
+
+		mailOpts := esi.PostCharactersCharacterIdMailOpts{Datasource: optional.NewString(fmt.Sprintf("%d", app.Config.CorpTaxCharacterID))}
+		mailID, _, err := app.ProxyESI.ESI.MailApi.PostCharactersCharacterIdMail(app.ProxyAuthContext, app.Config.CorpTaxCharacterID, mail, &mailOpts)
+		if err != nil {
+			log.Printf("Error sending invoice evemail. corpID=%d recipientID=%d senderID=%d balance=%.2f error=\"%s\"",
+				corpID,
+				corpData.CeoId,
+				app.Config.CorpTaxCharacterID,
+				taxData.Balance,
+				err.Error(),
+			)
+			results.Info = append(results.Info, fmt.Sprintf("Failed to send invoice. Balance Due: %.2f", taxData.Balance))
+		} else {
+			log.Printf("Invoice sent via evemail. recipient=%d mailID=%d", corpData.CeoId, mailID)
+		}
+	}
+
+	taxData.Balance = runningBalance
+	taxData.LastTransactionID = maxTransactionID
+	taxData.LastTransactionDate = maxTransactionDate
+	taxData.LastPaymentID = maxPaymentID
+
+	// for some reason we can't insert multiple rows at once :(
+	//app.DB.Create(&payments)
+	for _, payment := range payments {
+		dbResult := app.DB.Create(&payment)
+		if dbResult.Error != nil {
+			logline := fmt.Sprintf("Error writing corp payment logs to db. corpID=%d journalID=%d error=\"%s\"",
+				corpID,
+				payment.JournalID,
+				dbResult.Error.Error(),
+			)
+			log.Print(logline)
+			results.Errors = append(results.Errors, logline)
+		}
+	}
+
+	dbResult := app.DB.Save(&taxData)
+	if dbResult.Error != nil {
+		logline := fmt.Sprintf("Error writing corp balance to db. corpID=%d error=\"%s\"",
+			corpID,
+			dbResult.Error.Error(),
+		)
+		log.Print(logline)
+		results.Errors = append(results.Errors, logline)
+	}
+
+	results.TaxOwed = taxData.Balance
+	log.Printf("Bounty balance and fees updated after %f", time.Now().Sub(startTime).Seconds())
 }
 
 func (app *app) generateAndSendWebhook(startTime time.Time, generalErrors []string, blocks *[]slack.Block) {
@@ -519,13 +704,6 @@ func (app *app) generateAndSendWebhook(startTime time.Time, generalErrors []stri
 	}
 }
 
-func integerMin(a int, b int) int {
-	if a <= b {
-		return a
-	}
-	return b
-}
-
 func generateStatusFooterBlock(startTime time.Time, generalErrors []string, blocks *[]slack.Block) {
 	generalErrors = append(generalErrors, fmt.Sprintf("Completed execution in %f", time.Now().Sub(startTime).Seconds()))
 	execFooter := slack.NewTextBlockObject("mrkdwn", strings.Join(generalErrors, "\n"), false, false)
@@ -533,7 +711,7 @@ func generateStatusFooterBlock(startTime time.Time, generalErrors []string, bloc
 	*blocks = append(*blocks, slack.NewContextBlock("", execFooter))
 }
 
-func characterIsOnIgnoreList(needle int32, haystack *[]characterIgnoreList) bool {
+func characterIsOnIgnoreList(needle int32, haystack *[]ignoredCharacter) bool {
 	for _, val := range *haystack {
 		if val.CharacterID == needle {
 			return true
@@ -556,6 +734,7 @@ func (app *app) esiHealthCheck() ([]string, error) {
 	var err error
 	status, _, err := app.ESI.Meta.MetaApi.GetStatus(nil, nil)
 	if err != nil {
+		log.Printf("Error getting ESI Status error=\"%s\"", err.Error())
 		generalErrors = append(generalErrors, "Error getting ESI Status")
 		return generalErrors, err
 	}
@@ -610,4 +789,25 @@ func createCorpBlocks(results corpVerificationResult) []slack.Block {
 	corpSection := slack.NewSectionBlock(corpIssues, nil, slack.NewAccessory(corpImage))
 
 	return []slack.Block{corpSection}
+}
+
+func integerMin(a int, b int) int {
+	if a <= b {
+		return a
+	}
+	return b
+}
+
+func integer64Max(a int64, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func dateMax(a time.Time, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
 }
