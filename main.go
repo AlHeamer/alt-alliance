@@ -282,10 +282,11 @@ func main() {
 				}
 				corpResult := app.verifyCorporation(corpID, &charIgnoreList, startTime)
 
-				if len(corpResult.Errors) > 0 ||
+				resultWorthLogging := len(corpResult.Errors) > 0 ||
 					len(corpResult.Warnings) > 0 ||
 					len(corpResult.Info) > 0 ||
-					len(corpResult.Status) > 0 {
+					len(corpResult.Status) > 0
+				if resultWorthLogging {
 					corpBlocks := createCorpBlocks(corpResult)
 					mutex.Lock()
 					blocks = append(blocks, corpBlocks...)
@@ -306,6 +307,7 @@ func main() {
 }
 
 func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnoreList, startTime time.Time) corpVerificationResult {
+	now := time.Now()
 	results := corpVerificationResult{CorpID: corpID, CorpName: fmt.Sprintf("Corp %d", corpID)}
 	results.Ceo = neucoreapi.Character{Name: "CEO"}
 	results.CeoMain = neucoreapi.Character{Name: "???"}
@@ -350,7 +352,6 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]characterIgnor
 		}
 	}
 
-	now := time.Now()
 	for _, notif := range notifications {
 		if notif.Timestamp.Add(time.Hour).Before(now) {
 			continue
@@ -561,23 +562,14 @@ func (app *app) esiHealthCheck() ([]string, error) {
 
 	for _, endpoint := range status {
 		if endpoint.Status != "green" {
-			usedRoute := false
-			switch endpoint.Route {
-			case "/alliances/{alliance_id}/corporations/": // public,  corp list
-				usedRoute = true
-			case "/corporations/{corporation_id}/": // public,  tax rate
-				usedRoute = true
-			case "/corporations/{corporation_id}/members/": // private, character list
-				usedRoute = true
-			case "/corporations/{corporation_id}/wallets/{division}/journal/": // private, ratting ISK
-				usedRoute = true
-			case "/characters/{character_id}/notifications/": // private, war notifs
-				usedRoute = true
-			case "/characters/{character_id}/mail/": // private, evemails
-				usedRoute = true
-			}
+			usedEndpoint := endpoint.Route == "/alliances/{alliance_id}/corporations/" || // public,  corp list
+				endpoint.Route == "/corporations/{corporation_id}/" || // public,  tax rate
+				endpoint.Route == "/corporations/{corporation_id}/members/" || // private, character list
+				endpoint.Route == "/corporations/{corporation_id}/wallets/{division}/journal/" || // private, ratting ISK and payments
+				endpoint.Route == "/characters/{character_id}/notifications/" || // private, war and structure notifs
+				endpoint.Route == "/characters/{character_id}/mail/" // private, sending evemails
 
-			if usedRoute == true {
+			if usedEndpoint {
 				status := ":heart:"
 				if endpoint.Status == "yellow" {
 					status = ":yellow_heart:"
