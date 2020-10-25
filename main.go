@@ -387,7 +387,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 	///
 	/// Read corp wallet and update owed balance. Should run less often (min 1h, max 30d)
 	///
-	app.updateBountyBalance(corpID, &corpData, &results, now, startTime)
+	// app.updateBountyBalance(corpID, &corpData, &results, now, startTime)
 
 	return results
 }
