@@ -469,7 +469,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	numBadMembers := len(naughtyMembers)
 	if numBadMembers > 0 {
 		var naughtyMemberNames []string
-		chunkSize := 5
+		chunkSize := 100
 		if chunkSize > numBadMembers {
 			chunkSize = numBadMembers
 		}
