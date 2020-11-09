@@ -143,7 +143,8 @@ func (app *app) initDB() {
 	}
 
 	connArgs := fmt.Sprintf(sqlString, user, password, host, dbName)
-	log.Printf(connArgs)
+	// Uncomment if you are trying to debug DB issues. Will reveal your password in logs.
+	//log.Println(connArgs)
 	app.DB, err = gorm.Open("mysql", connArgs)
 	if err != nil {
 		log.Fatal(err.Error(), "\n\nDB connection error: Did you forget to specify database params?")
@@ -295,6 +296,7 @@ func main() {
 			for corpID := range queue {
 				for _, ignoreCorp := range corpIgnoreList {
 					if corpID == ignoreCorp.CorpID {
+						log.Printf("Ignored Corporation id=%d", corpID)
 						continue
 					}
 				}
@@ -457,11 +459,13 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	}
 	log.Printf("Neucore Corp Members retrieved after %f", time.Now().Sub(startTime).Seconds())
 
-	naughtyMembers := corpMembers[:0]
+	var naughtyMembers []int32
 	for _, char := range corpMembers {
 		if !characterExistsInNeucore(int64(char), neuCharacters) {
 			if !characterIsOnIgnoreList(char, charIgnoreList) {
 				naughtyMembers = append(naughtyMembers, char)
+			} else {
+				log.Printf("Ignored Character id=%d", char)
 			}
 		}
 	}
