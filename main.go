@@ -105,7 +105,7 @@ type corpVerificationResult struct {
 	Status   []string
 }
 
-var requiredRoles = [...]neucoreapi.Role{neucoreapi.APP, neucoreapi.APP_CHARS, neucoreapi.APP_ESI /*, neucoreapi.APP_GROUPS*/}
+var requiredRoles = [...]neucoreapi.Role{neucoreapi.APP, neucoreapi.APP_CHARS, neucoreapi.APP_ESI, neucoreapi.APP_GROUPS}
 
 const dateFormat = "2006-01-02"
 const dateTimeFormat = "2006-01-02 15:04"
@@ -443,15 +443,16 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	if err != nil {
 		logline := fmt.Sprintf("Proxy: Error getting characters for corp from esi. corpID=%d error=\"%s\"", corpID, err.Error())
 		log.Printf(logline)
-		if response.StatusCode == http.StatusForbidden {
-			results.Errors = append(results.Errors, "Re-auth corp CEO: Needs ESI scope for member list.")
-		} else {
+		switch response.StatusCode {
+		default:
 			results.Errors = append(results.Errors, logline)
+		case http.StatusForbidden:
+			results.Errors = append(results.Errors, "Re-auth corp CEO: Needs ESI scope for member list.")
 		}
 	}
 	log.Printf("ESI Corp Members retrieved after %f", time.Now().Sub(startTime).Seconds())
 
-	// Get member list form Neucore
+	// Get member list from Neucore
 	neuCharacters, _, err := app.Neu.ApplicationCharactersApi.CorporationCharactersV1(app.NeucoreContext, corpID)
 	if err != nil {
 		log.Printf("Neu: Error getting characters for corp from neucore. corpID=%d error=\"%s\"", corpID, corpData.Name)
@@ -461,19 +462,19 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 
 	var naughtyMembers []int32
 	for _, char := range corpMembers {
-		if !characterExistsInNeucore(int64(char), neuCharacters) {
-			if !characterIsOnIgnoreList(char, charIgnoreList) {
-				naughtyMembers = append(naughtyMembers, char)
-			} else {
+		if !characterExistsInNeucore(int64(char), &neuCharacters) {
+			if characterIsOnIgnoreList(char, charIgnoreList) {
 				log.Printf("Ignored Character id=%d", char)
+				continue
 			}
+			naughtyMembers = append(naughtyMembers, char)
 		}
 	}
 
+	chunkSize := 100
 	numBadMembers := len(naughtyMembers)
+	var naughtyMemberNames []string
 	if numBadMembers > 0 {
-		var naughtyMemberNames []string
-		chunkSize := 100
 		if chunkSize > numBadMembers {
 			chunkSize = numBadMembers
 		}
@@ -492,10 +493,33 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 		if numBadMembers > chunkSize {
 			naughtyMemberNames = append(naughtyMemberNames, fmt.Sprintf("and %d more...", numBadMembers-chunkSize))
 		}
-		naughtyMemberString := strings.Join(naughtyMemberNames, ", ")
-
-		results.Errors = append(results.Errors, fmt.Sprintf("Characters with invalid tokens, or not in Neucore: %d/%d\n%s", numBadMembers, corpData.MemberCount, naughtyMemberString))
 	}
+	results.Errors = append(results.Errors, fmt.Sprintf("Characters with invalid tokens, or not in Neucore: %d/%d\n%s", numBadMembers, corpData.MemberCount, strings.Join(naughtyMemberNames, ", ")))
+
+	/// Characters in Neucore, but lacking 'member' group (no chars in brave proper)
+	var neuPlayers []neucoreapi.Player
+	neuPlayers, _, err = app.Neu.ApplicationCharactersApi.CorporationPlayersV1(app.NeucoreContext, corpID)
+	if err != nil {
+		log.Printf("Neu: Error getting players in corp from neucore. corpID=%d error=\"%s\"", corpID, corpData.Name)
+		results.Errors = append(results.Errors, fmt.Sprintf("Error getting characters from Neucore. error=\"%s\"", err.Error()))
+	}
+	log.Printf("Neucore Corp Players retrieved after %f", time.Now().Sub(startTime).Seconds())
+
+	naughtyMembers = nil
+	naughtyMemberNames = nil
+	var naughtyMemberStrings []string
+	for _, p := range neuPlayers {
+		if !playerBelongsToGroup("member", &p.Groups) {
+			naughtyMembers = append(naughtyMembers, p.Id)
+			naughtyMemberNames = append(naughtyMemberNames, p.Name)
+		}
+	}
+
+	numBadMembers = len(naughtyMembers)
+	for i := range naughtyMembers {
+		naughtyMemberStrings = append(naughtyMemberStrings, fmt.Sprintf("<%s://%s//#UserAdmin/%d|%s>", app.Config.NeucoreHTTPScheme, app.Config.NeucoreDomain, naughtyMembers[i], naughtyMemberNames[i]))
+	}
+	results.Warnings = append(results.Errors, fmt.Sprintf("Characters without 'member' roles: %d/%d\n%s", numBadMembers, corpData.MemberCount, strings.Join(naughtyMemberStrings, ", ")))
 
 	log.Printf("Naughty list compiled after %f", time.Now().Sub(startTime).Seconds())
 }
@@ -725,9 +749,18 @@ func characterIsOnIgnoreList(needle int32, haystack *[]ignoredCharacter) bool {
 	return false
 }
 
-func characterExistsInNeucore(needle int64, haystack []neucoreapi.Character) bool {
-	for _, val := range haystack {
+func characterExistsInNeucore(needle int64, haystack *[]neucoreapi.Character) bool {
+	for _, val := range *haystack {
 		if val.Id == needle || *val.ValidToken == false {
+			return true
+		}
+	}
+	return false
+}
+
+func playerBelongsToGroup(needle string, haystack *[]neucoreapi.Group) bool {
+	for _, val := range *haystack {
+		if val.Name == needle {
 			return true
 		}
 	}
