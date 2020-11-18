@@ -471,55 +471,67 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 		}
 	}
 
-	chunkSize := 100
+	chunkSize := 50
 	numBadMembers := len(naughtyMembers)
-	var naughtyMemberNames []string
+	var naughtyMemberStrings []string
 	if numBadMembers > 0 {
 		if chunkSize > numBadMembers {
 			chunkSize = numBadMembers
 		}
+
 		chars := naughtyMembers[0:chunkSize]
 		names, _, err := app.ESI.ESI.UniverseApi.PostUniverseNames(nil, chars, nil)
 		if err != nil {
 			log.Printf("Error retreiving bulk character names request=\"%v\" error=\"%s\"", chars, err.Error())
 			results.Info = append(results.Info, "Error retreiving character names.")
 		}
+
 		for _, name := range names {
 			if name.Category != "character" {
 				continue
 			}
-			naughtyMemberNames = append(naughtyMemberNames, fmt.Sprintf("<https://evewho.com/character/%d|%s>", name.Id, name.Name))
+			naughtyMemberStrings = append(naughtyMemberStrings, fmt.Sprintf("<https://evewho.com/character/%d|%s>", name.Id, name.Name))
 		}
 		if numBadMembers > chunkSize {
-			naughtyMemberNames = append(naughtyMemberNames, fmt.Sprintf("and %d more...", numBadMembers-chunkSize))
+			naughtyMemberStrings = append(naughtyMemberStrings, fmt.Sprintf("and %d more...", numBadMembers-chunkSize))
 		}
+
+		results.Errors = append(results.Errors, fmt.Sprintf("Characters with invalid tokens, or not in Neucore: %d/%d\n%s", numBadMembers, corpData.MemberCount, strings.Join(naughtyMemberStrings, ", ")))
 	}
-	results.Errors = append(results.Errors, fmt.Sprintf("Characters with invalid tokens, or not in Neucore: %d/%d\n%s", numBadMembers, corpData.MemberCount, strings.Join(naughtyMemberNames, ", ")))
 
 	/// Characters in Neucore, but lacking 'member' group (no chars in brave proper)
-	var neuPlayers []neucoreapi.Player
-	neuPlayers, _, err = app.Neu.ApplicationCharactersApi.CorporationPlayersV1(app.NeucoreContext, corpID)
+	charGroups, _, err := app.Neu.ApplicationGroupsApi.GroupsBulkV1(app.NeucoreContext, corpMembers)
 	if err != nil {
-		log.Printf("Neu: Error getting players in corp from neucore. corpID=%d error=\"%s\"", corpID, corpData.Name)
-		results.Errors = append(results.Errors, fmt.Sprintf("Error getting characters from Neucore. error=\"%s\"", err.Error()))
+		log.Printf("Neu: Error retreiving bulk character groups error=\"%s\"", err.Error())
 	}
-	log.Printf("Neucore Corp Players retrieved after %f", time.Now().Sub(startTime).Seconds())
 
 	naughtyMembers = nil
-	naughtyMemberNames = nil
-	var naughtyMemberStrings []string
-	for _, p := range neuPlayers {
-		if !playerBelongsToGroup("member", &p.Groups) {
-			naughtyMembers = append(naughtyMembers, p.Id)
-			naughtyMemberNames = append(naughtyMemberNames, p.Name)
+	var naughtyMemberNames []string
+	for _, char := range charGroups {
+		if !playerBelongsToGroup("member", &char.Groups) {
+			naughtyMembers = append(naughtyMembers, int32(char.Character.Id))
+			naughtyMemberNames = append(naughtyMemberNames, char.Character.Name)
 		}
 	}
 
+	chunkSize = 50
+	naughtyMemberStrings = nil
 	numBadMembers = len(naughtyMembers)
-	for i := range naughtyMembers {
-		naughtyMemberStrings = append(naughtyMemberStrings, fmt.Sprintf("<%s://%s//#UserAdmin/%d|%s>", app.Config.NeucoreHTTPScheme, app.Config.NeucoreDomain, naughtyMembers[i], naughtyMemberNames[i]))
+	if numBadMembers > 0 {
+		if chunkSize > numBadMembers {
+			chunkSize = numBadMembers
+		}
+
+		chars := naughtyMembers[0:chunkSize]
+		for i := range chars {
+			naughtyMemberStrings = append(naughtyMemberStrings, fmt.Sprintf("<%s://%s//#UserAdmin/%d|%s>", app.Config.NeucoreHTTPScheme, app.Config.NeucoreDomain, naughtyMembers[i], naughtyMemberNames[i]))
+		}
+
+		if numBadMembers > chunkSize {
+			naughtyMemberStrings = append(naughtyMemberStrings, fmt.Sprintf("and %d more...", numBadMembers-chunkSize))
+		}
+		results.Warnings = append(results.Warnings, fmt.Sprintf("Characters without 'member' roles: %d/%d\n%s", numBadMembers, corpData.MemberCount, strings.Join(naughtyMemberStrings, ", ")))
 	}
-	results.Warnings = append(results.Errors, fmt.Sprintf("Characters without 'member' roles: %d/%d\n%s", numBadMembers, corpData.MemberCount, strings.Join(naughtyMemberStrings, ", ")))
 
 	log.Printf("Naughty list compiled after %f", time.Now().Sub(startTime).Seconds())
 }
