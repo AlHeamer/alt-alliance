@@ -834,7 +834,18 @@ func createCorpBlocks(results corpVerificationResult) []slack.Block {
 		fmt.Fprintf(&sb, "\n  :information_source: %s", value)
 	}
 
-	corpIssues := slack.NewTextBlockObject("mrkdwn", sb.String(), false, false)
+	blockText := sb.String()
+	if len(blockText) > 3000 {
+		blockText = blockText[:2985]
+		open := strings.LastIndex(blockText, "<")
+		close := strings.LastIndex(blockText, ">")
+		if open > close {
+			blockText = blockText[:open]
+		}
+		blockText += "\n--TRUNCATED--"
+	}
+
+	corpIssues := slack.NewTextBlockObject("mrkdwn", blockText, false, false)
 	corpImage := slack.NewImageBlockElement(fmt.Sprintf("https://images.evetech.net/corporations/%d/logo", results.CorpID), results.CorpName)
 	corpSection := slack.NewSectionBlock(corpIssues, nil, slack.NewAccessory(corpImage))
 
