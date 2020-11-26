@@ -384,7 +384,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 	if corpData.WarEligible {
 		results.Errors = append(results.Errors, "Corporation is War Eligible.")
 	}
-	app.discoverNaughtyMembers(corpID, &corpData, &results, charIgnoreList, now, startTime)
+	app.discoverNaughtyMembers(corpID, &corpData, &results, charIgnoreList, startTime)
 
 	///
 	/// Read corp wallet and update owed balance. Should run less often (min 1h, max 30d)
@@ -435,7 +435,8 @@ func (app *app) checkCeoNotifications(corpID int32, corpData *esi.GetCorporation
 	log.Printf("Parsed CEO's notifications after %f", time.Now().Sub(startTime).Seconds())
 }
 
-func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult, charIgnoreList *[]ignoredCharacter, now time.Time, startTime time.Time) {
+func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult, charIgnoreList *[]ignoredCharacter, startTime time.Time) {
+	const defaultChunkSize = 30
 	// Datasource changes based on what corp you're querying, use the CEO's charID.
 	ceoStringID := optional.NewString(results.Ceo.Name)
 	corpMembersOpts := &esi.GetCorporationsCorporationIdMembersOpts{Datasource: ceoStringID}
@@ -471,7 +472,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 		}
 	}
 
-	chunkSize := 30
+	chunkSize := defaultChunkSize
 	numBadMembers := len(naughtyMembers)
 	var naughtyMemberStrings []string
 	if numBadMembers > 0 {
@@ -521,7 +522,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 		}
 	}
 
-	chunkSize = 30
+	chunkSize = defaultChunkSize
 	naughtyMemberStrings = nil
 	numBadMembers = len(nonMemberCharacters)
 	if numBadMembers > 0 {
