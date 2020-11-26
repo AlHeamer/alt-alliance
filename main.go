@@ -471,7 +471,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 		}
 	}
 
-	chunkSize := 50
+	chunkSize := 30
 	numBadMembers := len(naughtyMembers)
 	var naughtyMemberStrings []string
 	if numBadMembers > 0 {
@@ -505,26 +505,33 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 		log.Printf("Neu: Error retreiving bulk character groups error=\"%s\"", err.Error())
 	}
 
-	naughtyMembers = nil
+	var newNaughtyMembers []int32
 	var naughtyMemberNames []string
 	for _, char := range charGroups {
 		if !playerBelongsToGroup("member", &char.Groups) {
-			naughtyMembers = append(naughtyMembers, int32(char.Character.Id))
+			newNaughtyMembers = append(newNaughtyMembers, int32(char.Character.Id))
 			naughtyMemberNames = append(naughtyMemberNames, char.Character.Name)
 		}
 	}
 
-	chunkSize = 50
+	var nonMemberCharacters []int32
+	for _, char := range newNaughtyMembers {
+		if !characterIsAlreadyNaughty(char, &naughtyMembers) {
+			nonMemberCharacters = append(nonMemberCharacters, char)
+		}
+	}
+
+	chunkSize = 30
 	naughtyMemberStrings = nil
-	numBadMembers = len(naughtyMembers)
+	numBadMembers = len(nonMemberCharacters)
 	if numBadMembers > 0 {
 		if chunkSize > numBadMembers {
 			chunkSize = numBadMembers
 		}
 
-		chars := naughtyMembers[0:chunkSize]
+		chars := nonMemberCharacters[0:chunkSize]
 		for i := range chars {
-			naughtyMemberStrings = append(naughtyMemberStrings, fmt.Sprintf("<%s://%s//#UserAdmin/%d|%s>", app.Config.NeucoreHTTPScheme, app.Config.NeucoreDomain, naughtyMembers[i], naughtyMemberNames[i]))
+			naughtyMemberStrings = append(naughtyMemberStrings, fmt.Sprintf("<%s://%s/#UserAdmin/%d|%s>", app.Config.NeucoreHTTPScheme, app.Config.NeucoreDomain, nonMemberCharacters[i], naughtyMemberNames[i]))
 		}
 
 		if numBadMembers > chunkSize {
@@ -750,6 +757,15 @@ func generateStatusFooterBlock(startTime time.Time, generalErrors []string, bloc
 	execFooter := slack.NewTextBlockObject("mrkdwn", strings.Join(generalErrors, "\n"), false, false)
 	*blocks = append(*blocks, slack.NewDividerBlock())
 	*blocks = append(*blocks, slack.NewContextBlock("", execFooter))
+}
+
+func characterIsAlreadyNaughty(needle int32, haystack *[]int32) bool {
+	for _, val := range *haystack {
+		if val == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func characterIsOnIgnoreList(needle int32, haystack *[]ignoredCharacter) bool {
