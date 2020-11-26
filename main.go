@@ -462,7 +462,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 
 	var naughtyMembers []int32
 	for _, char := range corpMembers {
-		if !characterExistsInNeucore(int64(char), &neuCharacters) {
+		if !characterHasValidNeucoreToken(int64(char), &neuCharacters) {
 			if characterIsOnIgnoreList(char, charIgnoreList) {
 				log.Printf("Ignored Character id=%d", char)
 				continue
@@ -783,6 +783,17 @@ func characterExistsInNeucore(needle int64, haystack *[]neucoreapi.Character) bo
 			return true
 		}
 	}
+	return false
+}
+
+func characterHasValidNeucoreToken(needle int64, haystack *[]neucoreapi.Character) bool {
+	for _, val := range *haystack {
+		if val.Id == needle {
+			return *val.ValidToken
+		}
+	}
+
+	// Character missing from neucore.
 	return false
 }
 
