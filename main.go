@@ -437,10 +437,11 @@ func (app *app) checkCeoNotifications(corpID int32, corpData *esi.GetCorporation
 
 func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult, charIgnoreList *[]ignoredCharacter, startTime time.Time) {
 	const defaultChunkSize = 30
-	// Datasource changes based on what corp you're querying, use the CEO's charID.
+
+	// Get member list from ESI - datasource changes based on what corp you're querying, use the CEO's charID.
 	ceoStringID := optional.NewString(results.Ceo.Name)
 	corpMembersOpts := &esi.GetCorporationsCorporationIdMembersOpts{Datasource: ceoStringID}
-	corpMembers, response, err := app.ProxyESI.ESI.CorporationApi.GetCorporationsCorporationIdMembers(app.ProxyAuthContext, corpID, corpMembersOpts)
+	esiCorpMembers, response, err := app.ProxyESI.ESI.CorporationApi.GetCorporationsCorporationIdMembers(app.ProxyAuthContext, corpID, corpMembersOpts)
 	if err != nil {
 		logline := fmt.Sprintf("Proxy: Error getting characters for corp from esi. corpID=%d error=\"%s\"", corpID, err.Error())
 		log.Printf(logline)
@@ -450,39 +451,45 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 		case http.StatusForbidden:
 			results.Errors = append(results.Errors, "Re-auth corp CEO: Needs ESI scope for member list.")
 		}
+		return
 	}
 	log.Printf("ESI Corp Members retrieved after %f", time.Now().Sub(startTime).Seconds())
 
 	// Get member list from Neucore
-	neuCharacters, _, err := app.Neu.ApplicationCharactersApi.CorporationCharactersV1(app.NeucoreContext, corpID)
+	neuCorpMembers, _, err := app.Neu.ApplicationCharactersApi.CorporationCharactersV1(app.NeucoreContext, corpID)
 	if err != nil {
 		log.Printf("Neu: Error getting characters for corp from neucore. corpID=%d error=\"%s\"", corpID, corpData.Name)
 		results.Errors = append(results.Errors, fmt.Sprintf("Error getting characters from Neucore. error=\"%s\"", err.Error()))
+		return
 	}
 	log.Printf("Neucore Corp Members retrieved after %f", time.Now().Sub(startTime).Seconds())
 
+	///////////////////
+
+	// Determine if a character is missing or has an invalid token in neucore.
 	var missingMembers []int32
 	var invalidMembers []int32
-	for _, char := range corpMembers {
-		if !characterExistsInNeucore(int64(char), &neuCharacters) {
-			if characterIsOnIgnoreList(char, charIgnoreList) {
-				log.Printf("Ignored Character missing from neucore id=%d", char)
+	for _, charID := range esiCorpMembers {
+		if !characterExistsInNeucore(int64(charID), &neuCorpMembers) {
+			// missing character
+			if characterIsOnIgnoreList(charID, charIgnoreList) {
+				log.Printf("Ignored Character missing from neucore id=%d", charID)
 				continue
 			}
-			missingMembers = append(missingMembers, char)
+			missingMembers = append(missingMembers, charID)
 		} else {
-			if !characterHasValidNeucoreToken(int64(char), &neuCharacters) {
-				if characterIsOnIgnoreList(char, charIgnoreList) {
-					log.Printf("Ignored Character with invalid neucore token id=%d", char)
+			if !characterHasValidNeucoreToken(int64(charID), &neuCorpMembers) {
+				// invalid token
+				if characterIsOnIgnoreList(charID, charIgnoreList) {
+					log.Printf("Ignored Character with invalid neucore token id=%d", charID)
 					continue
 				}
-				invalidMembers = append(invalidMembers, char)
+				invalidMembers = append(invalidMembers, charID)
 			}
 		}
 	}
 
-	// Get member names from ESI
-	chunkSize := defaultChunkSize
+	// Get missing and invalid member names from ESI
 	naughtyIDs := append(missingMembers, invalidMembers...)
 	if len(naughtyIDs) > 0 {
 		naughtyNames, _, err := app.ESI.ESI.UniverseApi.PostUniverseNames(nil, naughtyIDs, nil)
@@ -491,83 +498,74 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 			results.Info = append(results.Info, "Error retreiving character names.")
 		}
 
-		// missing members
-		numMissingMembers := len(missingMembers)
-		if chunkSize > numMissingMembers {
-			chunkSize = numMissingMembers
-		}
-		chars := missingMembers[:chunkSize]
 		var missingMemberStrings []string
-		for _, name := range naughtyNames {
-			if name.Category != "character" {
-				continue
-			}
-			missingMemberStrings = append(missingMemberStrings, fmt.Sprintf("<https://evewho.com/character/%d|%s>", name.Id, name.Name))
-		}
-		if numMissingMembers > chunkSize {
-			missingMemberStrings = append(missingMemberStrings, fmt.Sprintf("and %d more...", numMissingMembers-chunkSize))
-		}
-		results.Errors = append(results.Errors, fmt.Sprintf("Characters not in Neucore: %d/%d\n%s", numMissingMembers, corpData.MemberCount, strings.Join(missingMemberStrings, ", ")))
-
-		// invalid members
-		chunkSize = defaultChunkSize
 		var invalidMemberStrings []string
+		numMissingMembers := len(missingMembers)
 		numInvalidMembers := len(invalidMembers)
-		if chunkSize > numInvalidMembers {
-			chunkSize = numInvalidMembers
-		}
-		chars = invalidMembers[:chunkSize]
+		missingChunkSize := integerMin(defaultChunkSize, numMissingMembers)
+		invalidChunkSize := integerMin(defaultChunkSize, numInvalidMembers)
+		missingMembers = missingMembers[:missingChunkSize]
+		invalidMembers = invalidMembers[:invalidChunkSize]
 		for _, name := range naughtyNames {
 			if name.Category != "character" {
 				continue
 			}
-			invalidMemberStrings = append(invalidMemberStrings, fmt.Sprintf("<https://evewho.com/character/%d|%s>", name.Id, name.Name))
+
+			if int32ExistsInArray(name.Id, &missingMembers) {
+				missingMemberStrings = append(missingMemberStrings, fmt.Sprintf("<https://evewho.com/character/%d|%s>", name.Id, name.Name))
+			} else {
+				if int32ExistsInArray(name.Id, &invalidMembers) {
+					invalidMemberStrings = append(invalidMemberStrings, fmt.Sprintf("<https://evewho.com/character/%d|%s>", name.Id, name.Name))
+				}
+			}
 		}
-		if numInvalidMembers > chunkSize {
-			invalidMemberStrings = append(invalidMemberStrings, fmt.Sprintf("and %d more...", numInvalidMembers-chunkSize))
+
+		if len(missingMemberStrings) > missingChunkSize {
+			missingMemberStrings = append(missingMemberStrings, fmt.Sprintf("and %d more...", numMissingMembers-missingChunkSize))
 		}
+		if len(invalidMemberStrings) > invalidChunkSize {
+			invalidMemberStrings = append(invalidMemberStrings, fmt.Sprintf("and %d more...", numInvalidMembers-invalidChunkSize))
+		}
+
+		results.Errors = append(results.Errors, fmt.Sprintf("Characters not in Neucore: %d/%d\n%s", numMissingMembers, corpData.MemberCount, strings.Join(missingMemberStrings, ", ")))
 		results.Errors = append(results.Errors, fmt.Sprintf("Characters with invalid Neucore tokens: %d/%d\n%s", numInvalidMembers, corpData.MemberCount, strings.Join(invalidMemberStrings, ", ")))
 	}
 
-	/// Check for characters in Neucore, but lacking 'member' group (no chars in brave proper, or gone inactive)
-	charGroups, _, err := app.Neu.ApplicationGroupsApi.GroupsBulkV1(app.NeucoreContext, corpMembers)
+	////////////////////
+
+	// Check for characters in Neucore, but lacking 'member' group (no chars in brave proper, or gone inactive)
+	characterGroups, _, err := app.Neu.ApplicationGroupsApi.GroupsBulkV1(app.NeucoreContext, esiCorpMembers)
 	if err != nil {
 		log.Printf("Neu: Error retreiving bulk character groups error=\"%s\"", err.Error())
 	}
 
-	var groupMemberIDs []int32
-	var groupMemberNames []string
-	for _, char := range charGroups {
+	var charsMissingGroup []int32
+	var namesMissingGroup []string
+	for _, char := range characterGroups {
+		charID := int32(char.Character.Id)
+		if int32ExistsInArray(charID, &naughtyIDs) {
+			continue
+		}
+
 		if !playerBelongsToGroup("member", &char.Groups) {
-			groupMemberIDs = append(groupMemberIDs, int32(char.Character.Id))
-			groupMemberNames = append(groupMemberNames, char.Character.Name)
+			charsMissingGroup = append(charsMissingGroup, charID)
+			namesMissingGroup = append(namesMissingGroup, char.Character.Name)
 		}
 	}
 
-	var nonMemberCharacters []int32
-	for _, char := range groupMemberIDs {
-		if !characterIsAlreadyNaughty(char, &naughtyIDs) { // naughtyIDs is missing from neucore + invalid esi token
-			nonMemberCharacters = append(nonMemberCharacters, char)
-		}
-	}
-
-	chunkSize = defaultChunkSize
-	var naughtyMemberStrings []string
-	numBadMembers := len(nonMemberCharacters)
-	if numBadMembers > 0 {
-		if chunkSize > numBadMembers {
-			chunkSize = numBadMembers
-		}
-
-		chars := nonMemberCharacters[:chunkSize]
+	var missingGroupMemberStrings []string
+	numMembersMissingGroup := len(charsMissingGroup)
+	if numMembersMissingGroup > 0 {
+		chunkSize := integerMin(defaultChunkSize, numMembersMissingGroup)
+		chars := charsMissingGroup[:chunkSize]
 		for i := range chars {
-			naughtyMemberStrings = append(naughtyMemberStrings, fmt.Sprintf("<%s://%s/#UserAdmin/%d|%s>", app.Config.NeucoreHTTPScheme, app.Config.NeucoreDomain, nonMemberCharacters[i], naughtyNames[i]))
+			missingGroupMemberStrings = append(missingGroupMemberStrings, fmt.Sprintf("<%s://%s/#UserAdmin/%d|%s>", app.Config.NeucoreHTTPScheme, app.Config.NeucoreDomain, charsMissingGroup[i], namesMissingGroup[i]))
 		}
 
-		if numBadMembers > chunkSize {
-			naughtyMemberStrings = append(naughtyMemberStrings, fmt.Sprintf("and %d more...", numBadMembers-chunkSize))
+		if numMembersMissingGroup > chunkSize {
+			missingGroupMemberStrings = append(missingGroupMemberStrings, fmt.Sprintf("and %d more...", numMembersMissingGroup-chunkSize))
 		}
-		results.Warnings = append(results.Warnings, fmt.Sprintf("Characters without 'member' roles: %d/%d\n%s", numBadMembers, corpData.MemberCount, strings.Join(naughtyMemberStrings, ", ")))
+		results.Warnings = append(results.Warnings, fmt.Sprintf("Characters without 'member' roles: %d/%d\n%s", numMembersMissingGroup, corpData.MemberCount, strings.Join(missingGroupMemberStrings, ", ")))
 	}
 
 	log.Printf("Naughty list compiled after %f", time.Now().Sub(startTime).Seconds())
@@ -789,7 +787,7 @@ func generateStatusFooterBlock(startTime time.Time, generalErrors []string, bloc
 	*blocks = append(*blocks, slack.NewContextBlock("", execFooter))
 }
 
-func characterIsAlreadyNaughty(needle int32, haystack *[]int32) bool {
+func int32ExistsInArray(needle int32, haystack *[]int32) bool {
 	for _, val := range *haystack {
 		if val == needle {
 			return true
