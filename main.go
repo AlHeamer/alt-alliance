@@ -490,6 +490,10 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	}
 
 	// Get missing and invalid member names from ESI
+	var invalidMemberStrings []string
+	var missingMemberStrings []string
+	numMissingMembers := len(missingMembers)
+	numInvalidMembers := len(invalidMembers)
 	naughtyIDs := append(missingMembers, invalidMembers...)
 	if len(naughtyIDs) > 0 {
 		naughtyNames, _, err := app.ESI.ESI.UniverseApi.PostUniverseNames(nil, naughtyIDs, nil)
@@ -498,14 +502,6 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 			results.Info = append(results.Info, "Error retreiving character names.")
 		}
 
-		var missingMemberStrings []string
-		var invalidMemberStrings []string
-		numMissingMembers := len(missingMembers)
-		numInvalidMembers := len(invalidMembers)
-		missingChunkSize := integerMin(defaultChunkSize, numMissingMembers)
-		invalidChunkSize := integerMin(defaultChunkSize, numInvalidMembers)
-		missingMembers = missingMembers[:missingChunkSize]
-		invalidMembers = invalidMembers[:invalidChunkSize]
 		for _, name := range naughtyNames {
 			if name.Category != "character" {
 				continue
@@ -518,26 +514,6 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 					invalidMemberStrings = append(invalidMemberStrings, fmt.Sprintf("<https://evewho.com/character/%d|%s>", name.Id, name.Name))
 				}
 			}
-		}
-
-		if len(missingMemberStrings) > missingChunkSize {
-			missingMemberStrings = append(missingMemberStrings, fmt.Sprintf("and %d more...", numMissingMembers-missingChunkSize))
-		}
-		if len(invalidMemberStrings) > invalidChunkSize {
-			invalidMemberStrings = append(invalidMemberStrings, fmt.Sprintf("and %d more...", numInvalidMembers-invalidChunkSize))
-		}
-
-		results.Errors = append(results.Errors, fmt.Sprintf(
-			"Characters not in Neucore: %d/%d\n%s",
-			numMissingMembers,
-			corpData.MemberCount,
-			strings.Join(missingMemberStrings, ", ")))
-		if numInvalidMembers > 0 {
-			results.Errors = append(results.Errors, fmt.Sprintf(
-				"Characters with invalid Neucore tokens: %d/%d\n%s",
-				numInvalidMembers,
-				corpData.MemberCount,
-				strings.Join(invalidMemberStrings, ", ")))
 		}
 	}
 
@@ -558,8 +534,30 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 		}
 
 		if !playerBelongsToGroup("member", &char.Groups) {
-			charsMissingGroup = append(charsMissingGroup, charID)
-			namesMissingGroup = append(namesMissingGroup, char.Character.Name)
+			// check for invalid token on other characters.
+			playerChars, _, err := app.Neu.ApplicationCharactersApi.CharactersV1(app.NeucoreContext, int32(char.Character.Id))
+			if err != nil {
+				message := fmt.Sprintf("Error retriveing alts. character=%d error=\"%s\"", char.Character.Id, err.Error())
+				results.Warnings = append(results.Warnings, message)
+				log.Print(message)
+			}
+
+			hasCharWithInvalidToken := false
+			for _, alt := range playerChars {
+				if !*alt.ValidToken {
+					hasCharWithInvalidToken = true
+					break
+				}
+			}
+
+			if hasCharWithInvalidToken {
+				invalidMembers = append(invalidMembers, charID)
+				invalidMemberStrings = append(invalidMemberStrings, fmt.Sprintf("<https://evewho.com/character/%d|%s>*", charID, char.Character.Name))
+				numInvalidMembers++
+			} else {
+				charsMissingGroup = append(charsMissingGroup, charID)
+				namesMissingGroup = append(namesMissingGroup, char.Character.Name)
+			}
 		}
 	}
 
@@ -575,7 +573,40 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 		if numMembersMissingGroup > chunkSize {
 			missingGroupMemberStrings = append(missingGroupMemberStrings, fmt.Sprintf("and %d more...", numMembersMissingGroup-chunkSize))
 		}
-		results.Warnings = append(results.Warnings, fmt.Sprintf("Characters without 'member' roles: %d/%d\n%s", numMembersMissingGroup, corpData.MemberCount, strings.Join(missingGroupMemberStrings, ", ")))
+	}
+
+	if numMissingMembers > 0 {
+		missingChunkSize := integerMin(defaultChunkSize, numMissingMembers)
+		missingMembers = missingMembers[:missingChunkSize]
+		if len(missingMemberStrings) > missingChunkSize {
+			missingMemberStrings = append(missingMemberStrings, fmt.Sprintf("and %d more...", numMissingMembers-missingChunkSize))
+		}
+		results.Errors = append(results.Errors, fmt.Sprintf(
+			"Characters not in Neucore: %d/%d\n%s",
+			numMissingMembers,
+			corpData.MemberCount,
+			strings.Join(missingMemberStrings, ", ")))
+	}
+
+	if numInvalidMembers > 0 {
+		invalidChunkSize := integerMin(defaultChunkSize, numInvalidMembers)
+		invalidMembers = invalidMembers[:invalidChunkSize]
+		if len(invalidMemberStrings) > invalidChunkSize {
+			invalidMemberStrings = append(invalidMemberStrings, fmt.Sprintf("and %d more...", numInvalidMembers-invalidChunkSize))
+		}
+		results.Errors = append(results.Errors, fmt.Sprintf(
+			"Characters with invalid Neucore tokens: %d/%d\n%s",
+			numInvalidMembers,
+			corpData.MemberCount,
+			strings.Join(invalidMemberStrings, ", ")))
+	}
+
+	if numMembersMissingGroup > 0 {
+		results.Warnings = append(results.Warnings, fmt.Sprintf(
+			"Characters without 'member' roles: %d/%d\n%s",
+			numMembersMissingGroup,
+			corpData.MemberCount,
+			strings.Join(missingGroupMemberStrings, ", ")))
 	}
 
 	log.Printf("Naughty list compiled after %f", time.Now().Sub(startTime).Seconds())
