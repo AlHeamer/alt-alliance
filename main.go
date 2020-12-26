@@ -527,8 +527,18 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 			invalidMemberStrings = append(invalidMemberStrings, fmt.Sprintf("and %d more...", numInvalidMembers-invalidChunkSize))
 		}
 
-		results.Errors = append(results.Errors, fmt.Sprintf("Characters not in Neucore: %d/%d\n%s", numMissingMembers, corpData.MemberCount, strings.Join(missingMemberStrings, ", ")))
-		results.Errors = append(results.Errors, fmt.Sprintf("Characters with invalid Neucore tokens: %d/%d\n%s", numInvalidMembers, corpData.MemberCount, strings.Join(invalidMemberStrings, ", ")))
+		results.Errors = append(results.Errors, fmt.Sprintf(
+			"Characters not in Neucore: %d/%d\n%s",
+			numMissingMembers,
+			corpData.MemberCount,
+			strings.Join(missingMemberStrings, ", ")))
+		if numInvalidMembers > 0 {
+			results.Errors = append(results.Errors, fmt.Sprintf(
+				"Characters with invalid Neucore tokens: %d/%d\n%s",
+				numInvalidMembers,
+				corpData.MemberCount,
+				strings.Join(invalidMemberStrings, ", ")))
+		}
 	}
 
 	////////////////////
