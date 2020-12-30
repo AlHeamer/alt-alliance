@@ -552,7 +552,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 
 			if hasCharWithInvalidToken {
 				invalidMembers = append(invalidMembers, charID)
-				invalidMemberStrings = append(invalidMemberStrings, fmt.Sprintf("<https://evewho.com/character/%d|%s>*", charID, char.Character.Name))
+				invalidMemberStrings = append(invalidMemberStrings, fmt.Sprintf("<https://evewho.com/character/%d|%s>'", charID, char.Character.Name))
 				numInvalidMembers++
 			} else {
 				charsMissingGroup = append(charsMissingGroup, charID)
