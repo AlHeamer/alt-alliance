@@ -358,8 +358,16 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 	// Get CEO info from neucore
 	neuMain, response, err := app.Neu.ApplicationCharactersApi.MainV2(app.NeucoreContext, corpData.CeoId)
 	if err != nil {
-		logline := fmt.Sprintf("Neu: Error retreiving CEO's main. ceoID=%d error=\"%s\"", corpData.CeoId, err.Error())
+		logline := "Neu: Error retreiving CEO's main."
+		if response == nil {
+			logline = logline + fmt.Sprintf(" ceoID=%d httpResponse=nil error=\"%s\"", corpData.CeoId, err.Error())
+			results.Errors = append(results.Errors, logline)
+			log.Print(logline)
+			return results
+		}
+		logline = logline + fmt.Sprintf(" ceoID=%d status=\"%s\" error=\"%s\"", corpData.CeoId, response.Status, err.Error())
 		log.Print(logline)
+
 		switch response.StatusCode {
 		case http.StatusNotFound:
 			results.Errors = append(results.Errors, "CEO or CEO's main not found in Neucore.")
@@ -399,11 +407,21 @@ func (app *app) checkCeoNotifications(corpID int32, corpData *esi.GetCorporation
 	notificationOps := &esi.GetCharactersCharacterIdNotificationsOpts{Datasource: ceoStringID}
 	notifications, response, err := app.ProxyESI.ESI.CharacterApi.GetCharactersCharacterIdNotifications(app.ProxyAuthContext, corpData.CeoId, notificationOps)
 	if err != nil {
-		log.Printf("Proxy: Error getting ceo notifications corpID=%d ceoID=%d error=\"%s\"", corpID, corpData.CeoId, err.Error())
-		if response.StatusCode == http.StatusForbidden {
+		logline := "Proxy: Error getting CEO's notifications."
+		if response == nil {
+			logline = logline + fmt.Sprintf(" corpID=%d ceoID=%d httpResponse=nil error=\"%s\"", corpID, corpData.CeoId, err.Error())
+			results.Errors = append(results.Errors, logline)
+			log.Print(logline)
+			return
+		}
+		logline = logline + fmt.Sprintf(" corpID=%d ceoID=%d status=\"%s\" error=\"%s\"", corpID, corpData.CeoId, response.Status, err.Error())
+		log.Print(logline)
+
+		switch response.StatusCode {
+		case http.StatusForbidden:
 			results.Warnings = append(results.Warnings, "Re-auth corp CEO: Needs ESI scope for notifications.")
-		} else {
-			results.Warnings = append(results.Warnings, fmt.Sprintf("Error getting CEO's notifications. error=\"%s\"", err.Error()))
+		default:
+			results.Warnings = append(results.Warnings, logline)
 		}
 	}
 
@@ -443,14 +461,23 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	corpMembersOpts := &esi.GetCorporationsCorporationIdMembersOpts{Datasource: ceoStringID}
 	esiCorpMembers, response, err := app.ProxyESI.ESI.CorporationApi.GetCorporationsCorporationIdMembers(app.ProxyAuthContext, corpID, corpMembersOpts)
 	if err != nil {
-		logline := fmt.Sprintf("Proxy: Error getting characters for corp from esi. corpID=%d error=\"%s\"", corpID, err.Error())
+		logline := fmt.Sprintf("Proxy: Error getting characters for corp from esi.")
+		if response == nil {
+			logline = logline + fmt.Sprintf(" (Invalid CEO Token?) corpID=%d httpResponse=nil error=\"%s\"", corpID, err.Error())
+			results.Errors = append(results.Errors, logline)
+			log.Printf(logline)
+			return
+		}
+		logline = logline + fmt.Sprintf(" corpID=%d status=\"%s\" error=\"%s\"", corpID, response.Status, err.Error())
 		log.Printf(logline)
+
 		switch response.StatusCode {
 		default:
 			results.Errors = append(results.Errors, logline)
 		case http.StatusForbidden:
 			results.Errors = append(results.Errors, "Re-auth corp CEO: Needs ESI scope for member list.")
 		}
+
 		return
 	}
 	log.Printf("ESI Corp Members retrieved after %f", time.Now().Sub(startTime).Seconds())
@@ -635,16 +662,21 @@ func (app *app) updateBountyBalance(corpID int32, corpData *esi.GetCorporationsC
 	journal, response, err := app.ProxyESI.ESI.WalletApi.GetCorporationsCorporationIdWalletsDivisionJournal(app.ProxyAuthContext, corpID, masterWallet, &journalOpts)
 	var pageReadIssues []string
 	if err != nil {
-		log.Printf("Proxy: Error reading journal corpID=%d page=%d ceoID=%d error=\"%s\"",
-			corpID,
-			journalOpts.Page.Value(),
-			corpData.CeoId,
-			err.Error(),
-		)
-		if response.StatusCode == http.StatusForbidden {
+		logline := "Proxy: Error reading journal."
+		if response == nil {
+			logline = logline + fmt.Sprintf(" corpID=%d page=%d ceoID=%d httpResponse=nil error=\"%s\"", corpID, journalOpts.Page.Value(), corpData.CeoId, err.Error())
+			results.Errors = append(results.Errors, logline)
+			log.Print(logline)
+			return
+		}
+		logline = logline + fmt.Sprintf(" corpID=%d page=%d ceoID=%d status=\"%s\" error=\"%s\"", corpID, journalOpts.Page.Value(), corpData.CeoId, response.Status, err.Error())
+		log.Print(logline)
+
+		switch response.StatusCode {
+		case http.StatusForbidden:
 			journalRolesOk = false
 			results.Warnings = append(results.Warnings, "Re-auth corp CEO: Needs ESI scope for wallet journals.")
-		} else {
+		default:
 			pageReadIssues = append(pageReadIssues, fmt.Sprintf("Error reading corp wallet page=%d error=\"%s\"", journalOpts.Page.Value(), err.Error()))
 		}
 	}
