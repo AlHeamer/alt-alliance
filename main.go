@@ -294,11 +294,9 @@ func main() {
 		go func() {
 			defer wg.Done()
 			for corpID := range queue {
-				for _, ignoreCorp := range corpIgnoreList {
-					if corpID == ignoreCorp.CorpID {
-						log.Printf("Ignored Corporation id=%d", corpID)
-						continue
-					}
+				if corpIsOnIgnoreList(corpID, &corpIgnoreList) {
+					log.Printf("Ignored Corporation id=%d", corpID)
+					continue
 				}
 
 				corpResult := app.verifyCorporation(corpID, &charIgnoreList, startTime)
@@ -863,6 +861,15 @@ func generateStatusFooterBlock(startTime time.Time, generalErrors []string, bloc
 func int32ExistsInArray(needle int32, haystack *[]int32) bool {
 	for _, val := range *haystack {
 		if val == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func corpIsOnIgnoreList(needle int32, haystack *[]ignoredCorp) bool {
+	for _, val := range *haystack {
+		if val.CorpID == needle {
 			return true
 		}
 	}
