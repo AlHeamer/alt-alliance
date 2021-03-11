@@ -94,15 +94,16 @@ type corpTaxPayment struct {
 }
 
 type corpVerificationResult struct {
-	CorpID   int32
-	CorpName string
-	TaxOwed  float64
-	Ceo      neucoreapi.Character
-	CeoMain  neucoreapi.Character
-	Errors   []string
-	Warnings []string
-	Info     []string
-	Status   []string
+	CorpID      int32
+	MemberCount int32
+	CorpName    string
+	TaxOwed     float64
+	Ceo         neucoreapi.Character
+	CeoMain     neucoreapi.Character
+	Errors      []string
+	Warnings    []string
+	Info        []string
+	Status      []string
 }
 
 var requiredRoles = [...]neucoreapi.Role{neucoreapi.APP, neucoreapi.APP_CHARS, neucoreapi.APP_ESI, neucoreapi.APP_GROUPS}
@@ -349,6 +350,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 		return results
 	}
 	results.CorpName = corpData.Name
+	results.MemberCount = corpData.MemberCount
 	results.Ceo.Id = int64(corpData.CeoId)
 	results.Ceo.Name = fmt.Sprintf("%d", corpData.CeoId)
 	log.Printf("Corp Data retrieved after %f", time.Now().Sub(startTime).Seconds())
@@ -607,9 +609,8 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 			missingMemberStrings = append(missingMemberStrings, fmt.Sprintf("and %d more...", numMissingMembers-missingChunkSize))
 		}
 		results.Errors = append(results.Errors, fmt.Sprintf(
-			"Characters not in Neucore: %d/%d\n%s",
+			"Characters not in Neucore: %d\n%s",
 			numMissingMembers,
-			corpData.MemberCount,
 			strings.Join(missingMemberStrings, ", ")))
 	}
 
@@ -620,21 +621,29 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 			invalidMemberStrings = append(invalidMemberStrings, fmt.Sprintf("and %d more...", numInvalidMembers-invalidChunkSize))
 		}
 		results.Errors = append(results.Errors, fmt.Sprintf(
-			"Characters with invalid Neucore tokens: %d/%d\n%s",
+			"Characters with invalid Neucore tokens: %d\n%s",
 			numInvalidMembers,
-			corpData.MemberCount,
 			strings.Join(invalidMemberStrings, ", ")))
 	}
 
 	if numMembersMissingGroup > 0 {
+		missingChunkSize := integerMin(defaultChunkSize, numMembersMissingGroup)
+		missingGroupMemberStrings = missingGroupMemberStrings[:missingChunkSize]
 		results.Warnings = append(results.Warnings, fmt.Sprintf(
-			"Characters without 'member' roles: %d/%d\n%s",
+			"Characters without 'member' roles: %d\n%s",
 			numMembersMissingGroup,
-			corpData.MemberCount,
 			strings.Join(missingGroupMemberStrings, ", ")))
 	}
 
-	log.Printf("Naughty list compiled after %f", time.Now().Sub(startTime).Seconds())
+	log.Printf("Naughty list compiled after %f corpID=%d err/warn/info=%d/%d/%d missing=%d invalid=%d notMember=%d",
+		time.Now().Sub(startTime).Seconds(),
+		corpID,
+		len(results.Errors),
+		len(results.Warnings),
+		len(results.Info),
+		numMissingMembers,
+		numInvalidMembers,
+		numMembersMissingGroup)
 }
 
 func (app *app) updateBountyBalance(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult, now time.Time, startTime time.Time) {
@@ -952,13 +961,14 @@ func createCorpBlocks(results corpVerificationResult) []slack.Block {
 	var sb strings.Builder
 	fmt.Fprintf(
 		&sb,
-		"*<https://evewho.com/corporation/%d|%s>* [CEO: <https://evewho.com/character/%d|%s> - <https://evewho.com/character/%d|%s>]",
+		"*<https://evewho.com/corporation/%d|%s>* [CEO: <https://evewho.com/character/%d|%s> - <https://evewho.com/character/%d|%s>] %d Members",
 		results.CorpID,
 		results.CorpName,
 		results.Ceo.Id,
 		results.Ceo.Name,
 		results.CeoMain.Id,
 		results.CeoMain.Name,
+		results.MemberCount,
 	)
 	for _, value := range results.Errors {
 		fmt.Fprintf(&sb, "\n  :octagonal_sign: %s", value)
