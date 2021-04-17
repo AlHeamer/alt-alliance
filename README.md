@@ -85,6 +85,17 @@ Do not check a corporation, even if it's in a checked alliance or contained with
 `INSERT INTO ignored_characters (character_id) VALUES({character_id});`
 
 ## Building
+### Build via Docker
+alt-alliance can be built using the following docker command from the top level of the repository:
+```
+docker run -v $PWD:/build golang:1.16-alpine3.13 /bin/sh /build && go build ./...
+```
+or a stripped binary with
+```
+docker run -v $PWD:/build golang:1.16-alpine3.13 /bin/sh /build && go build -gcflags -trimpath=/build -ldflags "-s -w" ./...
+```
+
+### Building Manually
 **NOTE:** exports will vary based on your installation/environment
 ``` bash
 export GOPATH=$HOME/go
