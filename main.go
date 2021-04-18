@@ -45,12 +45,13 @@ type config struct {
 }
 
 type app struct {
-	Config             config
-	DB                 *gorm.DB
-	ESI                *goesi.APIClient
-	ProxyESI           *goesi.APIClient
-	Neu                *neucoreapi.APIClient
-	neucoreTokenSource oauth2.TokenSource
+	Config           config
+	DB               *gorm.DB
+	ESI              *goesi.APIClient
+	ProxyESI         *goesi.APIClient
+	Neu              *neucoreapi.APIClient
+	NeucoreContext   context.Context
+	ProxyAuthContext context.Context
 }
 
 type checkedAlliance struct {
@@ -172,7 +173,8 @@ func (app *app) initApp() {
 		AccessToken: base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%d:%s", app.Config.NeucoreAppID, app.Config.NeucoreAppSecret))),
 		TokenType:   "bearer",
 	}
-	app.neucoreTokenSource = proxyAuth.TokenSource(proxyToken)
+	neucoreTokenSource := proxyAuth.TokenSource(proxyToken)
+	app.ProxyAuthContext = context.WithValue(context.Background(), goesi.ContextOAuth2, neucoreTokenSource)
 
 	// Init Neucore API
 	neucoreConfig := &neucoreapi.Configuration{
@@ -181,6 +183,7 @@ func (app *app) initApp() {
 		BasePath:   app.Config.NeucoreAPIBase,
 	}
 	app.Neu = neucoreapi.NewAPIClient(neucoreConfig)
+	app.NeucoreContext = context.WithValue(context.Background(), neucoreapi.ContextOAuth2, neucoreTokenSource)
 }
 
 func main() {
@@ -209,8 +212,7 @@ func main() {
 	}
 
 	// Neucore Roles Check
-	neucoreContext := context.WithValue(context.Background(), neucoreapi.ContextOAuth2, app.neucoreTokenSource)
-	neucoreAppData, _, err := app.Neu.ApplicationApi.ShowV1(neucoreContext)
+	neucoreAppData, _, err := app.Neu.ApplicationApi.ShowV1(app.NeucoreContext)
 	if err != nil {
 		neucoreError := fmt.Sprintf("Error checking neucore app info. error=\"%s\"", err.Error())
 		log.Printf(neucoreError)
@@ -353,8 +355,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 	log.Printf("Corp Data retrieved after %f", time.Now().Sub(startTime).Seconds())
 
 	// Get CEO info from neucore
-	neucoreContext := context.WithValue(context.Background(), neucoreapi.ContextOAuth2, app.neucoreTokenSource)
-	neuMain, response, err := app.Neu.ApplicationCharactersApi.MainV2(neucoreContext, corpData.CeoId)
+	neuMain, response, err := app.Neu.ApplicationCharactersApi.MainV2(app.NeucoreContext, corpData.CeoId)
 	if err != nil {
 		logline := "Neu: Error retreiving CEO's main."
 		if response == nil {
@@ -403,8 +404,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 func (app *app) checkCeoNotifications(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult, now time.Time, startTime time.Time) {
 	ceoStringID := optional.NewString(results.Ceo.Name)
 	notificationOps := &esi.GetCharactersCharacterIdNotificationsOpts{Datasource: ceoStringID}
-	proxyAuthContext := context.WithValue(context.Background(), goesi.ContextOAuth2, app.neucoreTokenSource)
-	notifications, response, err := app.ProxyESI.ESI.CharacterApi.GetCharactersCharacterIdNotifications(proxyAuthContext, corpData.CeoId, notificationOps)
+	notifications, response, err := app.ProxyESI.ESI.CharacterApi.GetCharactersCharacterIdNotifications(app.ProxyAuthContext, corpData.CeoId, notificationOps)
 	if err != nil {
 		logline := "Proxy: Error getting CEO's notifications."
 		if response == nil {
@@ -458,8 +458,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	// Get member list from ESI - datasource changes based on what corp you're querying, use the CEO's charID.
 	ceoStringID := optional.NewString(results.Ceo.Name)
 	corpMembersOpts := &esi.GetCorporationsCorporationIdMembersOpts{Datasource: ceoStringID}
-	proxyAuthContext := context.WithValue(context.Background(), goesi.ContextOAuth2, app.neucoreTokenSource)
-	esiCorpMembers, response, err := app.ProxyESI.ESI.CorporationApi.GetCorporationsCorporationIdMembers(proxyAuthContext, corpID, corpMembersOpts)
+	esiCorpMembers, response, err := app.ProxyESI.ESI.CorporationApi.GetCorporationsCorporationIdMembers(app.ProxyAuthContext, corpID, corpMembersOpts)
 	if err != nil {
 		logline := fmt.Sprintf("Proxy: Error getting characters for corp from esi.")
 		if response == nil {
@@ -483,8 +482,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	log.Printf("ESI Corp Members retrieved after %f", time.Now().Sub(startTime).Seconds())
 
 	// Get member list from Neucore
-	neucoreContext := context.WithValue(context.Background(), neucoreapi.ContextOAuth2, app.neucoreTokenSource)
-	neuCorpMembers, _, err := app.Neu.ApplicationCharactersApi.CorporationCharactersV1(neucoreContext, corpID)
+	neuCorpMembers, _, err := app.Neu.ApplicationCharactersApi.CorporationCharactersV1(app.NeucoreContext, corpID)
 	if err != nil {
 		log.Printf("Neu: Error getting characters for corp from neucore. corpID=%d error=\"%s\"", corpID, corpData.Name)
 		results.Errors = append(results.Errors, fmt.Sprintf("Error getting characters from Neucore. error=\"%s\"", err.Error()))
@@ -548,8 +546,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	////////////////////
 
 	// Check for characters in Neucore, but lacking 'member' group (no chars in brave proper, or gone inactive)
-	neucoreContext = context.WithValue(context.Background(), neucoreapi.ContextOAuth2, app.neucoreTokenSource)
-	characterGroups, _, err := app.Neu.ApplicationGroupsApi.GroupsBulkV1(neucoreContext, esiCorpMembers)
+	characterGroups, _, err := app.Neu.ApplicationGroupsApi.GroupsBulkV1(app.NeucoreContext, esiCorpMembers)
 	if err != nil {
 		log.Printf("Neu: Error retreiving bulk character groups error=\"%s\"", err.Error())
 	}
@@ -564,8 +561,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 
 		if !playerBelongsToGroup("member", &char.Groups) {
 			// check for invalid token on other characters.
-			neucoreContext = context.WithValue(context.Background(), neucoreapi.ContextOAuth2, app.neucoreTokenSource)
-			playerChars, _, err := app.Neu.ApplicationCharactersApi.CharactersV1(neucoreContext, int32(char.Character.Id))
+			playerChars, _, err := app.Neu.ApplicationCharactersApi.CharactersV1(app.NeucoreContext, int32(char.Character.Id))
 			if err != nil {
 				message := fmt.Sprintf("Error retrieving alts. character=%d error=\"%s\"", char.Character.Id, err.Error())
 				results.Warnings = append(results.Warnings, message)
@@ -669,8 +665,7 @@ func (app *app) updateBountyBalance(corpID int32, corpData *esi.GetCorporationsC
 	journalRolesOk := true
 	ceoStringID := optional.NewString(results.Ceo.Name)
 	journalOpts := esi.GetCorporationsCorporationIdWalletsDivisionJournalOpts{Datasource: ceoStringID, Page: optional.NewInt32(1)}
-	proxyAuthContext := context.WithValue(context.Background(), goesi.ContextOAuth2, app.neucoreTokenSource)
-	journal, response, err := app.ProxyESI.ESI.WalletApi.GetCorporationsCorporationIdWalletsDivisionJournal(proxyAuthContext, corpID, masterWallet, &journalOpts)
+	journal, response, err := app.ProxyESI.ESI.WalletApi.GetCorporationsCorporationIdWalletsDivisionJournal(app.ProxyAuthContext, corpID, masterWallet, &journalOpts)
 	var pageReadIssues []string
 	if err != nil {
 		logline := "Proxy: Error reading journal."
@@ -696,8 +691,7 @@ func (app *app) updateBountyBalance(corpID int32, corpData *esi.GetCorporationsC
 		numPages, _ := strconv.Atoi(response.Header.Get("X-Pages"))
 		for i := 2; i < numPages; i++ {
 			journalOpts.Page = optional.NewInt32(int32(i))
-			proxyAuthContext := context.WithValue(context.Background(), goesi.ContextOAuth2, app.neucoreTokenSource)
-			page, _, err := app.ProxyESI.ESI.WalletApi.GetCorporationsCorporationIdWalletsDivisionJournal(proxyAuthContext, corpID, masterWallet, &journalOpts)
+			page, _, err := app.ProxyESI.ESI.WalletApi.GetCorporationsCorporationIdWalletsDivisionJournal(app.ProxyAuthContext, corpID, masterWallet, &journalOpts)
 			if err != nil {
 				log.Printf("Proxy: Error reading journal corpID=%d page=%d ceoID=%d error=\"%s\"",
 					corpID,
@@ -792,8 +786,7 @@ func (app *app) updateBountyBalance(corpID int32, corpData *esi.GetCorporationsC
 		}
 
 		mailOpts := esi.PostCharactersCharacterIdMailOpts{Datasource: optional.NewString(fmt.Sprintf("%d", app.Config.CorpTaxCharacterID))}
-		proxyAuthContext := context.WithValue(context.Background(), goesi.ContextOAuth2, app.neucoreTokenSource)
-		mailID, _, err := app.ProxyESI.ESI.MailApi.PostCharactersCharacterIdMail(proxyAuthContext, app.Config.CorpTaxCharacterID, mail, &mailOpts)
+		mailID, _, err := app.ProxyESI.ESI.MailApi.PostCharactersCharacterIdMail(app.ProxyAuthContext, app.Config.CorpTaxCharacterID, mail, &mailOpts)
 		if err != nil {
 			log.Printf("Error sending invoice evemail. corpID=%d recipientID=%d senderID=%d balance=%.2f error=\"%s\"",
 				corpID,
