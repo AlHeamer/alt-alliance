@@ -352,19 +352,19 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 	results.MemberCount = corpData.MemberCount
 	results.Ceo.Id = int64(corpData.CeoId)
 	results.Ceo.Name = fmt.Sprintf("%d", corpData.CeoId)
-	log.Printf("Corp Data retrieved after %f", time.Now().Sub(startTime).Seconds())
+	log.Printf("Corp Data retrieved after %f corpID=%d", time.Now().Sub(startTime).Seconds(), corpID)
 
 	// Get CEO info from neucore
 	neuMain, response, err := app.Neu.ApplicationCharactersApi.MainV2(app.NeucoreContext, corpData.CeoId)
 	if err != nil {
 		logline := "Neu: Error retreiving CEO's main."
 		if response == nil {
-			logline = logline + fmt.Sprintf(" ceoID=%d httpResponse=nil error=\"%s\"", corpData.CeoId, err.Error())
+			logline = logline + fmt.Sprintf(" ceoID=%d corpID=%d httpResponse=nil error=\"%s\"", corpID, corpData.CeoId, err.Error())
 			results.Errors = append(results.Errors, logline)
 			log.Print(logline)
 			return results
 		}
-		logline = logline + fmt.Sprintf(" ceoID=%d status=\"%s\" error=\"%s\"", corpData.CeoId, response.Status, err.Error())
+		logline = logline + fmt.Sprintf(" ceoID=%d corpID=%d status=\"%s\" error=\"%s\"", corpID, corpData.CeoId, response.Status, err.Error())
 		log.Print(logline)
 
 		switch response.StatusCode {
@@ -449,7 +449,7 @@ func (app *app) checkCeoNotifications(corpID int32, corpData *esi.GetCorporation
 		}
 	}
 
-	log.Printf("Parsed CEO's notifications after %f", time.Now().Sub(startTime).Seconds())
+	log.Printf("Parsed CEO's notifications after %f ceoID=%d corpID=%d", time.Now().Sub(startTime).Seconds(), corpData.CeoId, corpID)
 }
 
 func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult, charIgnoreList *[]ignoredCharacter, startTime time.Time) {
@@ -479,7 +479,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 
 		return
 	}
-	log.Printf("ESI Corp Members retrieved after %f", time.Now().Sub(startTime).Seconds())
+	log.Printf("ESI Corp Members retrieved after %f corpID=%d", time.Now().Sub(startTime).Seconds(), corpID)
 
 	// Get member list from Neucore
 	neuCorpMembers, _, err := app.Neu.ApplicationCharactersApi.CorporationCharactersV1(app.NeucoreContext, corpID)
@@ -488,7 +488,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 		results.Errors = append(results.Errors, fmt.Sprintf("Error getting characters from Neucore. error=\"%s\"", err.Error()))
 		return
 	}
-	log.Printf("Neucore Corp Members retrieved after %f", time.Now().Sub(startTime).Seconds())
+	log.Printf("Neucore Corp Members retrieved after %f corpID=%d", time.Now().Sub(startTime).Seconds(), corpID)
 
 	///////////////////
 
