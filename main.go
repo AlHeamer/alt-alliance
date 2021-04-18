@@ -171,7 +171,6 @@ func (app *app) initApp() {
 	proxyToken := &oauth2.Token{
 		AccessToken: base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%d:%s", app.Config.NeucoreAppID, app.Config.NeucoreAppSecret))),
 		TokenType:   "bearer",
-		Expiry:      time.Now().Add(httpc.Timeout),
 	}
 	app.neucoreTokenSource = proxyAuth.TokenSource(proxyToken)
 
@@ -568,7 +567,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 			neucoreContext = context.WithValue(context.Background(), neucoreapi.ContextOAuth2, app.neucoreTokenSource)
 			playerChars, _, err := app.Neu.ApplicationCharactersApi.CharactersV1(neucoreContext, int32(char.Character.Id))
 			if err != nil {
-				message := fmt.Sprintf("Error retriveing alts. character=%d error=\"%s\"", char.Character.Id, err.Error())
+				message := fmt.Sprintf("Error retrieving alts. character=%d error=\"%s\"", char.Character.Id, err.Error())
 				results.Warnings = append(results.Warnings, message)
 				log.Print(message)
 			}
