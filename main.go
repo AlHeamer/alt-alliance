@@ -906,7 +906,7 @@ func characterExistsInNeucore(needle int64, haystack *[]neucoreapi.Character) bo
 func characterHasValidNeucoreToken(needle int64, haystack *[]neucoreapi.Character) bool {
 	for _, val := range *haystack {
 		if val.Id == needle {
-			return *val.ValidToken
+			return val.ValidToken != nil && *val.ValidToken
 		}
 	}
 
