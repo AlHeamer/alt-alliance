@@ -572,7 +572,15 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 
 			hasCharWithInvalidToken := false
 			for _, alt := range playerChars {
-				if !*alt.ValidToken {
+				valid := alt.ValidToken
+				if valid == nil {
+					log.Printf("found character with nil ValidToken field charID=%d name=\"%s\" isMain=%t",
+						alt.Id,
+						alt.Name,
+						alt.Main)
+					hasCharWithInvalidToken = true
+					break
+				} else if !*valid {
 					hasCharWithInvalidToken = true
 					break
 				}
