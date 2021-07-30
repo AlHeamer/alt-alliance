@@ -557,6 +557,9 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	var namesMissingGroup []string
 	for _, char := range characterGroups {
 		charID := int32(char.Character.Id)
+		if characterIsOnIgnoreList(charID, charIgnoreList) {
+			continue
+		}
 		if int32ExistsInArray(charID, &naughtyIDs) {
 			continue
 		}
@@ -572,15 +575,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 
 			hasCharWithInvalidToken := false
 			for _, alt := range playerChars {
-				valid := alt.ValidToken
-				if valid == nil {
-					log.Printf("found character with nil ValidToken field charID=%d name=\"%s\" isMain=%t",
-						alt.Id,
-						alt.Name,
-						alt.Main)
-					hasCharWithInvalidToken = true
-					break
-				} else if !*valid {
+				if alt.ValidToken == nil || !*alt.ValidToken {
 					hasCharWithInvalidToken = true
 					break
 				}
