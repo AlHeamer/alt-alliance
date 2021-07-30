@@ -48,7 +48,7 @@ Example configuration:
 ``` SQL
 INSERT INTO `configs` VALUES (
   1,
-  20
+  20,
   NULL, -- characterID who will send invoice evemails
   NULL, -- corporationID who will receive payments
   0.1,
