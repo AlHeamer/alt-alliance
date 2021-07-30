@@ -67,11 +67,13 @@ type checkedCorp struct {
 type ignoredCorp struct {
 	gorm.Model
 	CorpID int32
+	Reason string
 }
 
 type ignoredCharacter struct {
 	gorm.Model
 	CharacterID int32
+	Reason      string
 }
 
 type corpBalance struct {
