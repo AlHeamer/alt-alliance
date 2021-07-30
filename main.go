@@ -203,7 +203,7 @@ func main() {
 
 	// Init ESI, Neucore
 	app.initApp()
-	log.Printf("Init Complete: %f", time.Now().Sub(startTime).Seconds())
+	log.Printf("Init Complete: %f", time.Since(startTime).Seconds())
 
 	// Perform ESI Health check.
 	var blocks []slack.Block
@@ -217,7 +217,7 @@ func main() {
 	neucoreAppData, _, err := app.Neu.ApplicationApi.ShowV1(app.NeucoreContext)
 	if err != nil {
 		neucoreError := fmt.Sprintf("Error checking neucore app info. error=\"%s\"", err.Error())
-		log.Printf(neucoreError)
+		log.Print(neucoreError)
 		generalErrors = append(generalErrors, neucoreError)
 		app.generateAndSendWebhook(startTime, generalErrors, &blocks)
 		return
@@ -239,7 +239,7 @@ func main() {
 			return
 		}
 	}
-	log.Printf("API Check Complete: %f", time.Now().Sub(startTime).Seconds())
+	log.Printf("API Check Complete: %f", time.Since(startTime).Seconds())
 
 	// Compile a list of all corps to check
 	var allCorps []int32
@@ -261,7 +261,7 @@ func main() {
 		go func() {
 			defer wg.Done()
 			for allianceID := range queue {
-				allianceCorps, _, err := app.ESI.ESI.AllianceApi.GetAlliancesAllianceIdCorporations(nil, allianceID, nil)
+				allianceCorps, _, err := app.ESI.ESI.AllianceApi.GetAlliancesAllianceIdCorporations(context.TODO(), allianceID, nil)
 				if err != nil {
 					logline := fmt.Sprintf("ESI: Error getting alliance corp list for allianceID=%d error=\"%s\"", allianceID, err.Error())
 					// dump and exit
@@ -280,7 +280,7 @@ func main() {
 	}
 	close(queue)
 	wg.Wait()
-	log.Printf("Alliance Check Complete: %f", time.Now().Sub(startTime).Seconds())
+	log.Printf("Alliance Check Complete: %f", time.Since(startTime).Seconds())
 
 	// check each corp in the alliance
 	queueLength = len(allCorps)
@@ -328,7 +328,7 @@ func main() {
 	if totalOwed > 2000000000 {
 		generalErrors = append(generalErrors, fmt.Sprintf("Total corp taxes owed=%.f", totalOwed))
 	}
-	log.Printf("Corp Check Complete: %f", time.Now().Sub(startTime).Seconds())
+	log.Printf("Corp Check Complete: %f", time.Since(startTime).Seconds())
 
 	app.generateAndSendWebhook(startTime, generalErrors, &blocks)
 }
@@ -343,7 +343,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 	}
 
 	// Get public corp data
-	corpData, _, err := app.ESI.ESI.CorporationApi.GetCorporationsCorporationId(nil, corpID, nil)
+	corpData, _, err := app.ESI.ESI.CorporationApi.GetCorporationsCorporationId(context.TODO(), corpID, nil)
 	if err != nil {
 		logline := fmt.Sprintf("ESI: Error getting public corp info. corpID=%d error=\"%s\"", corpID, err.Error())
 		log.Print(logline)
@@ -354,7 +354,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 	results.MemberCount = corpData.MemberCount
 	results.Ceo.Id = int64(corpData.CeoId)
 	results.Ceo.Name = fmt.Sprintf("%d", corpData.CeoId)
-	log.Printf("Corp Data retrieved after %f corpID=%d", time.Now().Sub(startTime).Seconds(), corpID)
+	log.Printf("Corp Data retrieved after %f corpID=%d", time.Since(startTime).Seconds(), corpID)
 
 	// Get CEO info from neucore
 	neuMain, response, err := app.Neu.ApplicationCharactersApi.MainV2(app.NeucoreContext, corpData.CeoId)
@@ -451,7 +451,7 @@ func (app *app) checkCeoNotifications(corpID int32, corpData *esi.GetCorporation
 		}
 	}
 
-	log.Printf("Parsed CEO's notifications after %f ceoID=%d corpID=%d", time.Now().Sub(startTime).Seconds(), corpData.CeoId, corpID)
+	log.Printf("Parsed CEO's notifications after %f ceoID=%d corpID=%d", time.Since(startTime).Seconds(), corpData.CeoId, corpID)
 }
 
 func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult, charIgnoreList *[]ignoredCharacter, startTime time.Time) {
@@ -462,15 +462,15 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	corpMembersOpts := &esi.GetCorporationsCorporationIdMembersOpts{Datasource: ceoStringID}
 	esiCorpMembers, response, err := app.ProxyESI.ESI.CorporationApi.GetCorporationsCorporationIdMembers(app.ProxyAuthContext, corpID, corpMembersOpts)
 	if err != nil {
-		logline := fmt.Sprintf("Proxy: Error getting characters for corp from esi.")
+		logline := "Proxy: Error getting characters for corp from esi."
 		if response == nil {
 			logline = logline + fmt.Sprintf(" (Invalid CEO Token?) corpID=%d httpResponse=nil error=\"%s\"", corpID, err.Error())
 			results.Errors = append(results.Errors, logline)
-			log.Printf(logline)
+			log.Print(logline)
 			return
 		}
 		logline = logline + fmt.Sprintf(" corpID=%d status=\"%s\" error=\"%s\"", corpID, response.Status, err.Error())
-		log.Printf(logline)
+		log.Print(logline)
 
 		switch response.StatusCode {
 		default:
@@ -481,7 +481,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 
 		return
 	}
-	log.Printf("ESI Corp Members retrieved after %f corpID=%d", time.Now().Sub(startTime).Seconds(), corpID)
+	log.Printf("ESI Corp Members retrieved after %f corpID=%d", time.Since(startTime).Seconds(), corpID)
 
 	// Get member list from Neucore
 	neuCorpMembers, _, err := app.Neu.ApplicationCharactersApi.CharacterListV1(app.NeucoreContext, esiCorpMembers)
@@ -490,7 +490,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 		results.Errors = append(results.Errors, fmt.Sprintf("Error getting characters from Neucore. error=\"%s\"", err.Error()))
 		return
 	}
-	log.Printf("Neucore Corp Members retrieved after %f corpID=%d", time.Now().Sub(startTime).Seconds(), corpID)
+	log.Printf("Neucore Corp Members retrieved after %f corpID=%d", time.Since(startTime).Seconds(), corpID)
 
 	///////////////////
 
@@ -524,7 +524,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	numInvalidMembers := len(invalidMembers)
 	naughtyIDs := append(missingMembers, invalidMembers...)
 	if len(naughtyIDs) > 0 {
-		naughtyNames, _, err := app.ESI.ESI.UniverseApi.PostUniverseNames(nil, naughtyIDs, nil)
+		naughtyNames, _, err := app.ESI.ESI.UniverseApi.PostUniverseNames(context.TODO(), naughtyIDs, nil)
 		if err != nil {
 			log.Printf("Error retreiving bulk character names request=\"%v\" error=\"%s\"", naughtyIDs, err.Error())
 			results.Info = append(results.Info, "Error retreiving character names.")
@@ -637,7 +637,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	}
 
 	log.Printf("Naughty list compiled after %f corpID=%d err/warn/info=%d/%d/%d missing=%d invalid=%d notMember=%d",
-		time.Now().Sub(startTime).Seconds(),
+		time.Since(startTime).Seconds(),
 		corpID,
 		len(results.Errors),
 		len(results.Warnings),
@@ -689,7 +689,7 @@ func (app *app) updateBountyBalance(corpID int32, corpData *esi.GetCorporationsC
 		}
 	}
 
-	if journalRolesOk == true {
+	if journalRolesOk {
 		numPages, _ := strconv.Atoi(response.Header.Get("X-Pages"))
 		for i := 2; i < numPages; i++ {
 			journalOpts.Page = optional.NewInt32(int32(i))
@@ -834,7 +834,7 @@ func (app *app) updateBountyBalance(corpID int32, corpData *esi.GetCorporationsC
 	}
 
 	results.TaxOwed = taxData.Balance
-	log.Printf("Bounty balance and fees updated after %f", time.Now().Sub(startTime).Seconds())
+	log.Printf("Bounty balance and fees updated after %f", time.Since(startTime).Seconds())
 }
 
 func (app *app) generateAndSendWebhook(startTime time.Time, generalErrors []string, blocks *[]slack.Block) {
@@ -845,8 +845,7 @@ func (app *app) generateAndSendWebhook(startTime time.Time, generalErrors []stri
 	blockArray := *blocks
 	numBlocks := len(blockArray)
 	for sentBlocks := 0; sentBlocks < numBlocks; sentBlocks += blocksPerMessage {
-		var batch []slack.Block
-		batch = blockArray[sentBlocks:integerMin(sentBlocks+blocksPerMessage, numBlocks)]
+		batch := blockArray[sentBlocks:integerMin(sentBlocks+blocksPerMessage, numBlocks)]
 
 		m := slack.Blocks{BlockSet: batch}
 		msg := slack.WebhookMessage{
@@ -862,7 +861,7 @@ func (app *app) generateAndSendWebhook(startTime time.Time, generalErrors []stri
 }
 
 func generateStatusFooterBlock(startTime time.Time, generalErrors []string, blocks *[]slack.Block) {
-	generalErrors = append(generalErrors, fmt.Sprintf("Completed execution in %f", time.Now().Sub(startTime).Seconds()))
+	generalErrors = append(generalErrors, fmt.Sprintf("Completed execution in %f", time.Since(startTime).Seconds()))
 	execFooter := slack.NewTextBlockObject("mrkdwn", strings.Join(generalErrors, "\n"), false, false)
 	*blocks = append(*blocks, slack.NewDividerBlock())
 	*blocks = append(*blocks, slack.NewContextBlock("", execFooter))
@@ -928,7 +927,7 @@ func playerBelongsToGroup(needle string, haystack *[]neucoreapi.Group) bool {
 func (app *app) esiHealthCheck() ([]string, error) {
 	generalErrors := []string{}
 	var err error
-	status, _, err := app.ESI.Meta.MetaApi.GetStatus(nil, nil)
+	status, _, err := app.ESI.Meta.MetaApi.GetStatus(context.TODO(), nil)
 	if err != nil {
 		log.Printf("Error getting ESI Status error=\"%s\"", err.Error())
 		generalErrors = append(generalErrors, "Error getting ESI Status")
