@@ -78,11 +78,11 @@ Manually add an individual corp to check:
 
 Do not check a corporation, even if it's in a checked alliance or contained within the corp check list:
 
-`INSERT INTO ignored_corps (corp_id) VALUES({corp_id});`
+`INSERT INTO ignored_corps (corp_id, reason) VALUES({corp_id}, {some reason});`
 
 Do not check a corporation, even if it's in a checked alliance or contained within the corp check list:
 
-`INSERT INTO ignored_characters (character_id) VALUES({character_id});`
+`INSERT INTO ignored_characters (character_id, reason) VALUES({character_id}, {some reason});`
 
 ## Building
 ### Build via Docker
