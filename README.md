@@ -88,11 +88,11 @@ Do not check a corporation, even if it's in a checked alliance or contained with
 ### Build via Docker
 alt-alliance can be built using the following docker command from the top level of the repository:
 ```
-docker run -v $PWD:/build golang:1.16-alpine3.13 /bin/sh /build && go build ./...
+docker run -v $PWD:/build golang:1.17-bullseye /bin/sh -c "cd /build; go build ./..."
 ```
 or a stripped binary with
 ```
-docker run -v $PWD:/build golang:1.16-alpine3.13 /bin/sh /build && go build -gcflags -trimpath=/build -ldflags "-s -w" ./...
+docker run -v $PWD:/build golang:1.17-bullseye /bin/sh -c "cd /build; go build -gcflags -trimpath=/build -ldflags "-s -w" ./..."
 ```
 
 ### Building Manually
