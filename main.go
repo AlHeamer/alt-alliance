@@ -44,6 +44,46 @@ type config struct {
 	EvemailBody                    string `gorm:"type:text"`
 }
 
+type CorpCheck int
+
+const (
+	// ceo notifictaions
+	NOTIF_WAR_ELIGIBLE_CHANGED CorpCheck = 1 << iota // No longer war eligible or newly war eligible
+	NOTIF_STRUCTURE_ANCHORING
+	NOTIF_STRUCTURE_ONLINE
+	// general corp info
+	CORP_TAX_RATE
+	CORP_WAR_ELIGIBLE
+	CORP_UPDATE_BOUNTIES
+	// naughty character checks
+	CHAR_EXISTS_IN_NEUCORE
+	CHAR_VALID_NEUCORE_TOKEN
+	CHAR_HAS_MEMBER_ROLE
+)
+const (
+	CORP_CHECK_MASK_ALL   CorpCheck = -1
+	CORP_CHECK_MASK_NONE  CorpCheck = 0
+	CORP_CHECK_MASK_NOTIF CorpCheck = 0b000000111
+	CORP_CHECK_MASK_CORP  CorpCheck = 0b000111000
+	CORP_CHECK_MASK_CHAR  CorpCheck = 0b111000000
+)
+
+func (lhs CorpCheck) Check(rhs CorpCheck) bool {
+	return lhs&rhs == rhs
+}
+func (lhs CorpCheck) Set(rhs CorpCheck) CorpCheck {
+	return lhs | rhs
+}
+func (lhs CorpCheck) Unset(rhs CorpCheck) CorpCheck {
+	return lhs &^ rhs
+}
+func (lhs CorpCheck) CSet(rhs CorpCheck, set bool) CorpCheck {
+	if set {
+		return lhs.Set(rhs)
+	}
+	return lhs
+}
+
 type app struct {
 	Config           config
 	DB               *gorm.DB
@@ -52,6 +92,7 @@ type app struct {
 	Neu              *neucoreapi.APIClient
 	NeucoreContext   context.Context
 	ProxyAuthContext context.Context
+	Checks           CorpCheck
 }
 
 type checkedAlliance struct {
@@ -135,11 +176,34 @@ func (app *app) initDB() {
 		dbName = n
 	}
 
-	flag.StringVar(&user, "u", user, "The username used to access the database.")
-	flag.StringVar(&password, "p", password, "The password for the user.")
-	flag.StringVar(&host, "h", host, "The hostname of the database to connect to (can be a unix socket, ip address, or domain.)")
-	flag.StringVar(&dbName, "d", dbName, "The name of the database to use.")
+	flag.StringVar(&user, "u", user, "The username used to access the database. (env var DB_USER)")
+	flag.StringVar(&password, "p", password, "The password for the user. (env var DB_PASS)")
+	flag.StringVar(&host, "h", host, "The hostname of the database to connect to (can be a unix socket, ip address, or domain.) (env var DB_HOST)")
+	flag.StringVar(&dbName, "d", dbName, "The name of the database to use. (env var DB_NAME)")
+	var warStatus, structureAnchroing, structureOnline bool
+	flag.BoolVar(&warStatus, "notif-war-status", true, "Check for changes in war eligibility status")
+	flag.BoolVar(&structureAnchroing, "notif-structure-anchoring", true, "Check for anchoring structures")
+	flag.BoolVar(&structureOnline, "notif-structure-online", true, "Check for onlining structures")
+	var corpTaxRate, corpWarEligible, corpUpdateBounties bool
+	flag.BoolVar(&corpTaxRate, "corp-tax-rate", true, "Check corporation tax rate is set correctly")
+	flag.BoolVar(&corpWarEligible, "corp-war-eligible", true, "Check corporation war eligibility")
+	flag.BoolVar(&corpUpdateBounties, "corp-update-bounties", false, "Record corp pirate bounties for tax purposes")
+	var charExists, charValid, charMember bool
+	flag.BoolVar(&charExists, "char-exists", true, "Check that characters exist in neucore")
+	flag.BoolVar(&charValid, "char-valid-token", true, "Check that characters have a valid esi token in neucore")
+	flag.BoolVar(&charMember, "char-member-role", true, "Check that characters have the 'member' role in neucore")
 	flag.Parse()
+
+	app.Checks = app.Checks.CSet(NOTIF_WAR_ELIGIBLE_CHANGED, warStatus)
+	app.Checks = app.Checks.CSet(NOTIF_STRUCTURE_ANCHORING, structureAnchroing)
+	app.Checks = app.Checks.CSet(NOTIF_STRUCTURE_ONLINE, structureOnline)
+	app.Checks = app.Checks.CSet(CORP_TAX_RATE, corpTaxRate)
+	app.Checks = app.Checks.CSet(CORP_WAR_ELIGIBLE, corpWarEligible)
+	app.Checks = app.Checks.CSet(CORP_UPDATE_BOUNTIES, corpUpdateBounties)
+	app.Checks = app.Checks.CSet(CHAR_EXISTS_IN_NEUCORE, charExists)
+	app.Checks = app.Checks.CSet(CHAR_VALID_NEUCORE_TOKEN, charValid)
+	app.Checks = app.Checks.CSet(CHAR_HAS_MEMBER_ROLE, charMember)
+	log.Printf("will performing the following checks: 0b%s", strconv.FormatInt(int64(app.Checks), 2))
 
 	if host[0:1] == "/" {
 		sqlString = "%s:%s@unix(%s)/%s?charset=utf8&parseTime=True&loc=Local"
@@ -387,18 +451,22 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 	///
 	/// Check corp info and member lists (cached 1 hour)
 	///
-	if corpData.TaxRate < app.Config.CorpBaseTaxRate {
+	if app.Checks.Check(CORP_TAX_RATE) && corpData.TaxRate < app.Config.CorpBaseTaxRate {
 		results.Errors = append(results.Errors, fmt.Sprintf("Tax rate is %.f%% (expected at least %.f%%)", corpData.TaxRate*100, app.Config.CorpBaseTaxRate*100))
 	}
-	if corpData.WarEligible {
+	if app.Checks.Check(CORP_WAR_ELIGIBLE) && corpData.WarEligible {
 		results.Errors = append(results.Errors, "Corporation is War Eligible.")
 	}
-	app.discoverNaughtyMembers(corpID, &corpData, &results, charIgnoreList, startTime)
+	if !app.Checks.Check(CORP_CHECK_MASK_CHAR) {
+		app.discoverNaughtyMembers(corpID, &corpData, &results, charIgnoreList, startTime)
+	}
 
 	///
 	/// Read corp wallet and update owed balance. Should run less often (min 1h, max 30d)
 	///
-	// app.updateBountyBalance(corpID, &corpData, &results, now, startTime)
+	if app.Checks.Check(CORP_UPDATE_BOUNTIES) {
+		app.updateBountyBalance(corpID, &corpData, &results, now, startTime)
+	}
 
 	return results
 }
@@ -435,14 +503,22 @@ func (app *app) checkCeoNotifications(corpID int32, corpData *esi.GetCorporation
 		msgLevel := &results.Errors
 		switch notif.Type_ {
 		case "CorpNoLongerWarEligible":
-			msg = "No longer war eligible"
-			msgLevel = &results.Info
+			if app.Checks.Check(NOTIF_WAR_ELIGIBLE_CHANGED) {
+				msg = "No longer war eligible"
+				msgLevel = &results.Info
+			}
 		case "CorpBecameWarEligible":
-			msg = "Became war eligible"
+			if app.Checks.Check(NOTIF_WAR_ELIGIBLE_CHANGED) {
+				msg = "Became war eligible"
+			}
 		case "StructureAnchoring":
-			msg = "Has a structure anchoring"
+			if app.Checks.Check(NOTIF_STRUCTURE_ANCHORING) {
+				msg = "Has a structure anchoring"
+			}
 		case "StructureOnline":
-			msg = "Has onlined a structure"
+			if app.Checks.Check(NOTIF_STRUCTURE_ONLINE) {
+				msg = "Has onlined a structure"
+			}
 		}
 
 		if msg != "" {
@@ -498,7 +574,8 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	var missingMembers []int32
 	var invalidMembers []int32
 	for _, charID := range esiCorpMembers {
-		if !characterExistsInNeucore(int64(charID), &neuCorpMembers) {
+		if app.Checks.Check(CHAR_EXISTS_IN_NEUCORE) &&
+			!characterExistsInNeucore(int64(charID), &neuCorpMembers) {
 			// missing character
 			if characterIsOnIgnoreList(charID, charIgnoreList) {
 				log.Printf("Ignored Character missing from neucore id=%d", charID)
@@ -506,7 +583,8 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 			}
 			missingMembers = append(missingMembers, charID)
 		} else {
-			if !characterHasValidNeucoreToken(int64(charID), &neuCorpMembers) {
+			if app.Checks.Check(CHAR_VALID_NEUCORE_TOKEN) &&
+				!characterHasValidNeucoreToken(int64(charID), &neuCorpMembers) {
 				// invalid token
 				if characterIsOnIgnoreList(charID, charIgnoreList) {
 					log.Printf("Ignored Character with invalid neucore token id=%d", charID)
@@ -548,46 +626,48 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	////////////////////
 
 	// Check for characters in Neucore, but lacking 'member' group (no chars in brave proper, or gone inactive)
-	characterGroups, _, err := app.Neu.ApplicationGroupsApi.GroupsBulkV1(app.NeucoreContext, esiCorpMembers)
-	if err != nil {
-		log.Printf("Neu: Error retreiving bulk character groups error=\"%s\"", err.Error())
-	}
-
 	var charsMissingGroup []int32
 	var namesMissingGroup []string
-	for _, char := range characterGroups {
-		charID := int32(char.Character.Id)
-		if characterIsOnIgnoreList(charID, charIgnoreList) {
-			continue
-		}
-		if int32ExistsInArray(charID, &naughtyIDs) {
-			continue
+	if app.Checks.Check(CHAR_HAS_MEMBER_ROLE) {
+		characterGroups, _, err := app.Neu.ApplicationGroupsApi.GroupsBulkV1(app.NeucoreContext, esiCorpMembers)
+		if err != nil {
+			log.Printf("Neu: Error retreiving bulk character groups error=\"%s\"", err.Error())
 		}
 
-		if !playerBelongsToGroup("member", &char.Groups) {
-			// check for invalid token on other characters.
-			playerChars, _, err := app.Neu.ApplicationCharactersApi.CharactersV1(app.NeucoreContext, int32(char.Character.Id))
-			if err != nil {
-				message := fmt.Sprintf("Error retrieving alts. character=%d error=\"%s\"", char.Character.Id, err.Error())
-				results.Warnings = append(results.Warnings, message)
-				log.Print(message)
+		for _, char := range characterGroups {
+			charID := int32(char.Character.Id)
+			if characterIsOnIgnoreList(charID, charIgnoreList) {
+				continue
+			}
+			if int32ExistsInArray(charID, &naughtyIDs) {
+				continue
 			}
 
-			hasCharWithInvalidToken := false
-			for _, alt := range playerChars {
-				if alt.ValidToken == nil || !*alt.ValidToken {
-					hasCharWithInvalidToken = true
-					break
+			if !playerBelongsToGroup("member", &char.Groups) {
+				// check for invalid token on other characters.
+				playerChars, _, err := app.Neu.ApplicationCharactersApi.CharactersV1(app.NeucoreContext, int32(char.Character.Id))
+				if err != nil {
+					message := fmt.Sprintf("Error retrieving alts. character=%d error=\"%s\"", char.Character.Id, err.Error())
+					results.Warnings = append(results.Warnings, message)
+					log.Print(message)
 				}
-			}
 
-			if hasCharWithInvalidToken {
-				invalidMembers = append(invalidMembers, charID)
-				invalidMemberStrings = append(invalidMemberStrings, fmt.Sprintf("<https://evewho.com/character/%d|%s>'", charID, char.Character.Name))
-				numInvalidMembers++
-			} else {
-				charsMissingGroup = append(charsMissingGroup, charID)
-				namesMissingGroup = append(namesMissingGroup, char.Character.Name)
+				hasCharWithInvalidToken := false
+				for _, alt := range playerChars {
+					if alt.ValidToken == nil || !*alt.ValidToken {
+						hasCharWithInvalidToken = true
+						break
+					}
+				}
+
+				if hasCharWithInvalidToken {
+					invalidMembers = append(invalidMembers, charID)
+					invalidMemberStrings = append(invalidMemberStrings, fmt.Sprintf("<https://evewho.com/character/%d|%s>'", charID, char.Character.Name))
+					numInvalidMembers++
+				} else {
+					charsMissingGroup = append(charsMissingGroup, charID)
+					namesMissingGroup = append(namesMissingGroup, char.Character.Name)
+				}
 			}
 		}
 	}

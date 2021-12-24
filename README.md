@@ -17,6 +17,36 @@ alt-alliance requires the following environment variables set in order to functi
 * `-p` or `DB_PASS` - The password for the user.
 * `-h` or `DB_HOST` - The hostname of the database to connect to (can be a unix socket, ip address, or domain.)
 * `-d` or `DB_NAME` - The name of the database to use.
+Checks can be unset via the command line using `-check=f`, currently, `-corp-update-bounties` is false by default
+```
+Usage of alt-alliance:
+  -char-exists
+    	Check that characters exist in neucore (default true)
+  -char-member-role
+    	Check that characters have the 'member' role in neucore (default true)
+  -char-valid-token
+    	Check that characters have a valid esi token in neucore (default true)
+  -corp-tax-rate
+    	Check corporation tax rate is set correctly (default true)
+  -corp-update-bounties
+    	Record corp pirate bounties for tax purposes
+  -corp-war-eligible
+    	Check corporation war eligibility (default true)
+  -d string
+    	The name of the database to use. (env var DB_NAME) (default "alt_alliance")
+  -h string
+    	The hostname of the database to connect to (can be a unix socket, ip address, or domain.) (env var DB_HOST) (default "/tmp/mysql.sock")
+  -notif-structure-anchoring
+    	Check for anchoring structures (default true)
+  -notif-structure-online
+    	Check for onlining structures (default true)
+  -notif-war-status
+    	Check for changes in war eligibility status (default true)
+  -p string
+    	The password for the user. (env var DB_PASS)
+  -u string
+    	The username used to access the database. (env var DB_USER) (default "root")
+```
 
 Command line params will overwrite ENV Vars.
 
