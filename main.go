@@ -71,6 +71,9 @@ const (
 func (lhs CorpCheck) Check(rhs CorpCheck) bool {
 	return lhs&rhs == rhs
 }
+func (lhs CorpCheck) CheckAny(rhs CorpCheck) bool {
+	return lhs&rhs > 0
+}
 func (lhs CorpCheck) Set(rhs CorpCheck) CorpCheck {
 	return lhs | rhs
 }
@@ -446,7 +449,9 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 	///
 	/// Check CEO's notifications (cached 10 minutes)
 	///
-	app.checkCeoNotifications(corpID, &corpData, &results, now, startTime)
+	if app.Checks.CheckAny(CORP_CHECK_MASK_NOTIF) {
+		app.checkCeoNotifications(corpID, &corpData, &results, now, startTime)
+	}
 
 	///
 	/// Check corp info and member lists (cached 1 hour)
@@ -457,7 +462,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 	if app.Checks.Check(CORP_WAR_ELIGIBLE) && corpData.WarEligible {
 		results.Errors = append(results.Errors, "Corporation is War Eligible.")
 	}
-	if !app.Checks.Check(CORP_CHECK_MASK_CHAR) {
+	if app.Checks.CheckAny(CORP_CHECK_MASK_CHAR) {
 		app.discoverNaughtyMembers(corpID, &corpData, &results, charIgnoreList, startTime)
 	}
 
