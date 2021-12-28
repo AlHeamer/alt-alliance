@@ -606,26 +606,9 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	numMissingMembers := len(missingMembers)
 	numInvalidMembers := len(invalidMembers)
 	naughtyIDs := append(missingMembers, invalidMembers...)
-	if len(naughtyIDs) > 0 {
-		naughtyNames, _, err := app.ESI.ESI.UniverseApi.PostUniverseNames(context.TODO(), naughtyIDs, nil)
-		if err != nil {
-			log.Printf("Error retreiving bulk character names request=\"%v\" error=\"%s\"", naughtyIDs, err.Error())
-			results.Info = append(results.Info, "Error retreiving character names.")
-		}
-
-		for _, name := range naughtyNames {
-			if name.Category != "character" {
-				continue
-			}
-
-			if int32ExistsInArray(name.Id, &missingMembers) {
-				missingMemberStrings = append(missingMemberStrings, fmt.Sprintf("<https://evewho.com/character/%d|%s>", name.Id, name.Name))
-			} else {
-				if int32ExistsInArray(name.Id, &invalidMembers) {
-					invalidMemberStrings = append(invalidMemberStrings, fmt.Sprintf("<https://evewho.com/character/%d|%s>", name.Id, name.Name))
-				}
-			}
-		}
+	missingMemberStrings, invalidMemberStrings, err = app.chunkNameRequest(naughtyIDs, missingMembers, invalidMembers)
+	if err != nil {
+		log.Printf("%s", err.Error())
 	}
 
 	////////////////////
@@ -693,7 +676,6 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 
 	if numMissingMembers > 0 {
 		missingChunkSize := integerMin(defaultChunkSize, numMissingMembers)
-		missingMembers = missingMembers[:missingChunkSize]
 		if len(missingMemberStrings) > missingChunkSize {
 			missingMemberStrings = append(missingMemberStrings, fmt.Sprintf("and %d more...", numMissingMembers-missingChunkSize))
 		}
@@ -705,7 +687,6 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 
 	if numInvalidMembers > 0 {
 		invalidChunkSize := integerMin(defaultChunkSize, numInvalidMembers)
-		invalidMembers = invalidMembers[:invalidChunkSize]
 		if len(invalidMemberStrings) > invalidChunkSize {
 			invalidMemberStrings = append(invalidMemberStrings, fmt.Sprintf("and %d more...", numInvalidMembers-invalidChunkSize))
 		}
@@ -1105,4 +1086,40 @@ func dateMax(a time.Time, b time.Time) time.Time {
 		return a
 	}
 	return b
+}
+
+func (app *app) chunkNameRequest(naughtyIDs []int32, missingMembers []int32, invalidMembers []int32) ([]string, []string, error) {
+	const NAME_POST_LIMIT = 1000
+	if len(naughtyIDs) <= 0 {
+		return []string{}, []string{}, nil
+	}
+
+	var missingMemberStrings, invalidMemberStrings []string
+	naughtyCount := len(naughtyIDs)
+	for i := 0; i < len(naughtyIDs); i += NAME_POST_LIMIT {
+		batchIDs := naughtyIDs[i:integerMin(i+NAME_POST_LIMIT, naughtyCount)]
+		naughtyNames, response, err := app.ESI.ESI.UniverseApi.PostUniverseNames(context.TODO(), batchIDs, nil)
+		if err != nil {
+			return nil, nil, fmt.Errorf("error retreving bulk character names request=\"%v\" error=\"%s\"", naughtyIDs, err.Error())
+		}
+		if response.StatusCode != http.StatusOK {
+			return nil, nil, fmt.Errorf("error retreving bulk character names request=\"%v\" status=%d", naughtyIDs, response.StatusCode)
+		}
+
+		for _, name := range naughtyNames {
+			if name.Category != "character" {
+				continue
+			}
+
+			if int32ExistsInArray(name.Id, &missingMembers) {
+				missingMemberStrings = append(missingMemberStrings, fmt.Sprintf("<https://evewho.com/character/%d|%s>", name.Id, name.Name))
+			} else {
+				if int32ExistsInArray(name.Id, &invalidMembers) {
+					invalidMemberStrings = append(invalidMemberStrings, fmt.Sprintf("<https://evewho.com/character/%d|%s>", name.Id, name.Name))
+				}
+			}
+		}
+	}
+
+	return missingMemberStrings, invalidMemberStrings, nil
 }
