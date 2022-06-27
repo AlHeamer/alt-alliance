@@ -144,8 +144,8 @@ type corpVerificationResult struct {
 	MemberCount int32
 	CorpName    string
 	TaxOwed     float64
-	Ceo         neucoreapi.Character
-	CeoMain     neucoreapi.Character
+	Ceo         *neucoreapi.Character
+	CeoMain     *neucoreapi.Character
 	Errors      []string
 	Warnings    []string
 	Info        []string
@@ -249,8 +249,13 @@ func (app *app) initApp() {
 	neucoreConfig := &neucoreapi.Configuration{
 		HTTPClient: httpc,
 		UserAgent:  app.Config.NeucoreUserAgent,
-		BasePath:   app.Config.NeucoreAPIBase,
+		Servers: neucoreapi.ServerConfigurations{{
+			URL:         app.Config.NeucoreAPIBase,
+			Description: "Neucore API Base",
+		}},
+		OperationServers: map[string]neucoreapi.ServerConfigurations{},
 	}
+
 	app.Neu = neucoreapi.NewAPIClient(neucoreConfig)
 	app.NeucoreContext = context.WithValue(context.Background(), neucoreapi.ContextOAuth2, neucoreTokenSource)
 }
@@ -281,7 +286,7 @@ func main() {
 	}
 
 	// Neucore Roles Check
-	neucoreAppData, _, err := app.Neu.ApplicationApi.ShowV1(app.NeucoreContext)
+	neucoreAppData, _, err := app.Neu.ApplicationApi.ShowV1(app.NeucoreContext).Execute()
 	if err != nil {
 		neucoreError := fmt.Sprintf("Error checking neucore app info. error=\"%s\"", err.Error())
 		log.Print(neucoreError)
@@ -368,7 +373,7 @@ func main() {
 					continue
 				}
 
-				corpResult := app.verifyCorporation(corpID, &charIgnoreList, startTime)
+				corpResult := app.verifyCorporation(corpID, charIgnoreList, startTime)
 				taxMutex.Lock()
 				totalOwed += corpResult.TaxOwed
 				taxMutex.Unlock()
@@ -400,13 +405,13 @@ func main() {
 	app.generateAndSendWebhook(startTime, generalErrors, &blocks)
 }
 
-func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharacter, startTime time.Time) corpVerificationResult {
+func (app *app) verifyCorporation(corpID int32, charIgnoreList []ignoredCharacter, startTime time.Time) corpVerificationResult {
 	now := time.Now()
 	results := corpVerificationResult{
 		CorpID:   corpID,
 		CorpName: fmt.Sprintf("Corp %d", corpID),
-		Ceo:      neucoreapi.Character{Name: "CEO"},
-		CeoMain:  neucoreapi.Character{Name: "???"},
+		Ceo:      &neucoreapi.Character{Name: "CEO"},
+		CeoMain:  &neucoreapi.Character{Name: "???"},
 	}
 
 	// Get public corp data
@@ -419,12 +424,13 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList *[]ignoredCharact
 	}
 	results.CorpName = corpData.Name
 	results.MemberCount = corpData.MemberCount
-	results.Ceo.Id = int64(corpData.CeoId)
+	ceoId := int64(corpData.CeoId)
+	results.Ceo.Id = *neucoreapi.NewNullableInt64(&ceoId)
 	results.Ceo.Name = fmt.Sprintf("%d", corpData.CeoId)
 	log.Printf("Corp Data retrieved after %f corpID=%d", time.Since(startTime).Seconds(), corpID)
 
 	// Get CEO info from neucore
-	neuMain, response, err := app.Neu.ApplicationCharactersApi.MainV2(app.NeucoreContext, corpData.CeoId)
+	neuMain, response, err := app.Neu.ApplicationCharactersApi.MainV2(app.NeucoreContext, corpData.CeoId).Execute()
 	if err != nil {
 		logline := "Neu: Error retreiving CEO's main."
 		if response == nil {
@@ -535,7 +541,7 @@ func (app *app) checkCeoNotifications(corpID int32, corpData *esi.GetCorporation
 	log.Printf("Parsed CEO's notifications after %f ceoID=%d corpID=%d", time.Since(startTime).Seconds(), corpData.CeoId, corpID)
 }
 
-func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult, charIgnoreList *[]ignoredCharacter, startTime time.Time) {
+func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult, charIgnoreList []ignoredCharacter, startTime time.Time) {
 	const defaultChunkSize = 30
 
 	// Get member list from ESI - datasource changes based on what corp you're querying, use the CEO's charID.
@@ -565,7 +571,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	log.Printf("ESI Corp Members retrieved after %f corpID=%d", time.Since(startTime).Seconds(), corpID)
 
 	// Get member list from Neucore
-	neuCorpMembers, _, err := app.Neu.ApplicationCharactersApi.CharacterListV1(app.NeucoreContext, esiCorpMembers)
+	neuCorpMembers, _, err := app.Neu.ApplicationCharactersApi.CharacterListV1(app.NeucoreContext).RequestBody(esiCorpMembers).Execute()
 	if err != nil {
 		log.Printf("Neu: Error getting characters for corp from neucore. corpID=%d error=\"%s\"", corpID, corpData.Name)
 		results.Errors = append(results.Errors, fmt.Sprintf("Error getting characters from Neucore. error=\"%s\"", err.Error()))
@@ -580,7 +586,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	var invalidMembers []int32
 	for _, charID := range esiCorpMembers {
 		if app.Checks.Check(CHAR_EXISTS_IN_NEUCORE) &&
-			!characterExistsInNeucore(int64(charID), &neuCorpMembers) {
+			!characterExistsInNeucore(int64(charID), neuCorpMembers) {
 			// missing character
 			if characterIsOnIgnoreList(charID, charIgnoreList) {
 				log.Printf("Ignored Character missing from neucore id=%d", charID)
@@ -589,7 +595,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 			missingMembers = append(missingMembers, charID)
 		} else {
 			if app.Checks.Check(CHAR_VALID_NEUCORE_TOKEN) &&
-				!characterHasValidNeucoreToken(int64(charID), &neuCorpMembers) {
+				!characterHasValidNeucoreToken(int64(charID), neuCorpMembers) {
 				// invalid token
 				if characterIsOnIgnoreList(charID, charIgnoreList) {
 					log.Printf("Ignored Character with invalid neucore token id=%d", charID)
@@ -617,13 +623,13 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	var charsMissingGroup []int32
 	var namesMissingGroup []string
 	if app.Checks.Check(CHAR_HAS_MEMBER_ROLE) {
-		characterGroups, _, err := app.Neu.ApplicationGroupsApi.GroupsBulkV1(app.NeucoreContext, esiCorpMembers)
+		characterGroups, _, err := app.Neu.ApplicationGroupsApi.GroupsBulkV1(app.NeucoreContext).RequestBody(esiCorpMembers).Execute()
 		if err != nil {
 			log.Printf("Neu: Error retreiving bulk character groups error=\"%s\"", err.Error())
 		}
 
 		for _, char := range characterGroups {
-			charID := int32(char.Character.Id)
+			charID := int32(char.Character.GetId())
 			if characterIsOnIgnoreList(charID, charIgnoreList) {
 				continue
 			}
@@ -631,9 +637,9 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 				continue
 			}
 
-			if !playerBelongsToGroup("member", &char.Groups) {
+			if !playerBelongsToGroup("member", char.Groups) {
 				// check for invalid token on other characters.
-				playerChars, _, err := app.Neu.ApplicationCharactersApi.CharactersV1(app.NeucoreContext, int32(char.Character.Id))
+				playerChars, _, err := app.Neu.ApplicationCharactersApi.CharactersV1(app.NeucoreContext, charID).Execute()
 				if err != nil {
 					message := fmt.Sprintf("Error retrieving alts. character=%d error=\"%s\"", char.Character.Id, err.Error())
 					results.Warnings = append(results.Warnings, message)
@@ -642,7 +648,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 
 				hasCharWithInvalidToken := false
 				for _, alt := range playerChars {
-					if alt.ValidToken == nil || !*alt.ValidToken {
+					if !alt.GetValidToken() {
 						hasCharWithInvalidToken = true
 						break
 					}
@@ -954,8 +960,8 @@ func corpIsOnIgnoreList(needle int32, haystack *[]ignoredCorp) bool {
 	return false
 }
 
-func characterIsOnIgnoreList(needle int32, haystack *[]ignoredCharacter) bool {
-	for _, val := range *haystack {
+func characterIsOnIgnoreList(needle int32, haystack []ignoredCharacter) bool {
+	for _, val := range haystack {
 		if val.CharacterID == needle {
 			return true
 		}
@@ -963,9 +969,9 @@ func characterIsOnIgnoreList(needle int32, haystack *[]ignoredCharacter) bool {
 	return false
 }
 
-func characterExistsInNeucore(needle int64, haystack *[]neucoreapi.Character) bool {
-	for _, val := range *haystack {
-		if val.Id == needle {
+func characterExistsInNeucore(needle int64, haystack []neucoreapi.Character) bool {
+	for _, val := range haystack {
+		if val.GetId() == needle {
 			return true
 		}
 	}
@@ -973,10 +979,10 @@ func characterExistsInNeucore(needle int64, haystack *[]neucoreapi.Character) bo
 	return false
 }
 
-func characterHasValidNeucoreToken(needle int64, haystack *[]neucoreapi.Character) bool {
-	for _, val := range *haystack {
-		if val.Id == needle {
-			return val.ValidToken != nil && *val.ValidToken
+func characterHasValidNeucoreToken(needle int64, haystack []neucoreapi.Character) bool {
+	for _, val := range haystack {
+		if val.GetId() == needle {
+			return val.GetValidToken()
 		}
 	}
 
@@ -984,9 +990,9 @@ func characterHasValidNeucoreToken(needle int64, haystack *[]neucoreapi.Characte
 	return false
 }
 
-func playerBelongsToGroup(needle string, haystack *[]neucoreapi.Group) bool {
-	for _, val := range *haystack {
-		if val.Name == needle {
+func playerBelongsToGroup(needle string, haystack []neucoreapi.Group) bool {
+	for _, val := range haystack {
+		if val.GetName() == needle {
 			return true
 		}
 	}
