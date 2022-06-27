@@ -236,7 +236,7 @@ func (app *app) initApp() {
 
 	// Init Neucore ESI Proxy
 	app.ProxyESI = goesi.NewAPIClient(httpc, app.Config.NeucoreUserAgent)
-	app.ProxyESI.ChangeBasePath(app.Config.NeucoreAPIBase + "/app/v1/esi")
+	app.ProxyESI.ChangeBasePath(app.Config.NeucoreAPIBase + "/app/v2/esi")
 	proxyAuth := goesi.NewSSOAuthenticatorV2(httpc, "", "", "", []string{})
 	proxyToken := &oauth2.Token{
 		AccessToken: base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%d:%s", app.Config.NeucoreAppID, app.Config.NeucoreAppSecret))),
