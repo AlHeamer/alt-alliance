@@ -641,7 +641,8 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 				// check for invalid token on other characters.
 				playerChars, _, err := app.Neu.ApplicationCharactersApi.CharactersV1(app.NeucoreContext, charID).Execute()
 				if err != nil {
-					message := fmt.Sprintf("Error retrieving alts. character=%d error=\"%s\"", char.Character.Id, err.Error())
+					c := char.GetCharacter()
+					message := fmt.Sprintf("Error retrieving alts. character=%d error=\"%s\"", c.GetId(), err.Error())
 					results.Warnings = append(results.Warnings, message)
 					log.Print(message)
 				}
@@ -916,7 +917,7 @@ func (app *app) generateAndSendWebhook(startTime time.Time, generalErrors []stri
 	generateStatusFooterBlock(startTime, generalErrors, blocks)
 
 	// slack has a 50 block limit per message, and 1 message per second limit ("burstable.")
-	const blocksPerMessage = 50
+	const blocksPerMessage = 25
 	blockArray := *blocks
 	numBlocks := len(blockArray)
 	for sentBlocks := 0; sentBlocks < numBlocks; sentBlocks += blocksPerMessage {
@@ -1041,9 +1042,9 @@ func createCorpBlocks(results corpVerificationResult) []slack.Block {
 		"*<https://evewho.com/corporation/%d|%s>* [CEO: <https://evewho.com/character/%d|%s> - <https://evewho.com/character/%d|%s>] %d Members",
 		results.CorpID,
 		results.CorpName,
-		results.Ceo.Id,
+		results.Ceo.GetId(),
 		results.Ceo.Name,
-		results.CeoMain.Id,
+		results.CeoMain.GetId(),
 		results.CeoMain.Name,
 		results.MemberCount,
 	)
