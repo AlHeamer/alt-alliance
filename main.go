@@ -920,7 +920,9 @@ func (app *app) generateAndSendWebhook(startTime time.Time, generalErrors []stri
 	blockArray := *blocks
 	numBlocks := len(blockArray)
 	for sentBlocks := 0; sentBlocks < numBlocks; sentBlocks += blocksPerMessage {
-		batch := blockArray[sentBlocks:integerMin(sentBlocks+blocksPerMessage, numBlocks)]
+		upper := integerMin(sentBlocks+blocksPerMessage, numBlocks)
+		batch := blockArray[sentBlocks:upper]
+		log.Printf("posting webhook batchLen=%d sentBlocks=%d numBlocks=%d range=%d:%d", len(batch), sentBlocks, numBlocks, sentBlocks, upper)
 
 		m := slack.Blocks{BlockSet: batch}
 		msg := slack.WebhookMessage{
