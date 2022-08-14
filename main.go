@@ -923,14 +923,15 @@ func (app *app) generateAndSendWebhook(startTime time.Time, generalErrors []stri
 	for sentBlocks := 0; sentBlocks < numBlocks; sentBlocks += blocksPerMessage {
 		upper := integerMin(sentBlocks+blocksPerMessage, numBlocks)
 		batch := blockArray[sentBlocks:upper]
-		log.Printf("posting webhook batchLen=%d sentBlocks=%d numBlocks=%d range=%d:%d", len(batch), sentBlocks, numBlocks, sentBlocks, upper)
 
 		m := slack.Blocks{BlockSet: batch}
-		msg := slack.WebhookMessage{
+		msg := &slack.WebhookMessage{
 			Blocks: &m,
 		}
 
-		err := slack.PostWebhook(app.Config.SlackWebhookURL, &msg)
+		j, _ := json.Marshal(msg)
+		log.Printf("posting webhook batchLen=%d sentBlocks=%d numBlocks=%d range=%d:%d payload=%s", len(batch), sentBlocks, numBlocks, sentBlocks, upper, string(j))
+		err := slack.PostWebhook(app.Config.SlackWebhookURL, msg)
 		if err != nil {
 			raw, _ := json.Marshal(&msg)
 			log.Printf("Slack POST Webhook error=\"%s\" request=\"%s\"", err.Error(), string(raw))
