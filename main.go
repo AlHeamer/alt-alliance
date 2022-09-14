@@ -913,15 +913,38 @@ func (app *app) updateBountyBalance(corpID int32, corpData *esi.GetCorporationsC
 	log.Printf("Bounty balance and fees updated after %f", time.Since(startTime).Seconds())
 }
 
+// 2022-09-13: Slack currently has a bug where it will resend messages n times where n = totalBlockTextLength / 4040
+func getBlocksUpperBugged(blocks []slack.Block, lower int, upper int) int {
+	var textLength int
+	newUpper := lower
+	for i := lower; i < upper; i++ {
+		if blocks[i].BlockType() != slack.MBTSection {
+			newUpper++
+			continue
+		}
+
+		b := blocks[i].(slack.SectionBlock)
+		textLength += len(b.Text.Text)
+		if textLength < 4040 {
+			newUpper++
+		} else {
+			break
+		}
+	}
+	return newUpper
+}
+
 func (app *app) generateAndSendWebhook(startTime time.Time, generalErrors []string, blocks *[]slack.Block) {
 	generateStatusFooterBlock(startTime, generalErrors, blocks)
 
 	// slack has a 50 block limit per message, and 1 message per second limit ("burstable.")
-	const blocksPerMessage = 25
+	const blocksPerMessage = 50
 	blockArray := *blocks
 	numBlocks := len(blockArray)
-	for sentBlocks := 0; sentBlocks < numBlocks; sentBlocks += blocksPerMessage {
-		upper := integerMin(sentBlocks+blocksPerMessage, numBlocks)
+	upper := integerMin(blocksPerMessage, numBlocks)
+	for sentBlocks := 0; sentBlocks < numBlocks; sentBlocks += upper {
+		upper = integerMin(sentBlocks+blocksPerMessage, numBlocks)
+		upper = getBlocksUpperBugged(blockArray, sentBlocks, upper)
 		batch := blockArray[sentBlocks:upper]
 
 		m := slack.Blocks{BlockSet: batch}
@@ -931,6 +954,8 @@ func (app *app) generateAndSendWebhook(startTime time.Time, generalErrors []stri
 
 		j, _ := json.Marshal(msg)
 		log.Printf("posting webhook batchLen=%d sentBlocks=%d numBlocks=%d range=%d:%d payload=%s", len(batch), sentBlocks, numBlocks, sentBlocks, upper, string(j))
+		// send rate is 1 message per second "burstable"
+		time.Sleep(1 * time.Second)
 		err := slack.PostWebhook(app.Config.SlackWebhookURL, msg)
 		if err != nil {
 			raw, _ := json.Marshal(&msg)
