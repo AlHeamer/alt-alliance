@@ -923,7 +923,7 @@ func getBlocksUpperBugged(blocks []slack.Block, lower int, upper int) int {
 			continue
 		}
 
-		b := blocks[i].(slack.SectionBlock)
+		b := blocks[i].(*slack.SectionBlock)
 		textLength += len(b.Text.Text)
 		if textLength < 4040 {
 			newUpper++
@@ -941,7 +941,7 @@ func (app *app) generateAndSendWebhook(startTime time.Time, generalErrors []stri
 	const blocksPerMessage = 50
 	blockArray := *blocks
 	numBlocks := len(blockArray)
-	upper := integerMin(blocksPerMessage, numBlocks)
+	var upper int
 	for sentBlocks := 0; sentBlocks < numBlocks; sentBlocks += upper {
 		upper = integerMin(sentBlocks+blocksPerMessage, numBlocks)
 		upper = getBlocksUpperBugged(blockArray, sentBlocks, upper)
@@ -956,8 +956,7 @@ func (app *app) generateAndSendWebhook(startTime time.Time, generalErrors []stri
 		log.Printf("posting webhook batchLen=%d sentBlocks=%d numBlocks=%d range=%d:%d payload=%s", len(batch), sentBlocks, numBlocks, sentBlocks, upper, string(j))
 		// send rate is 1 message per second "burstable"
 		time.Sleep(1 * time.Second)
-		err := slack.PostWebhook(app.Config.SlackWebhookURL, msg)
-		if err != nil {
+		if err := slack.PostWebhook(app.Config.SlackWebhookURL, msg); err != nil {
 			raw, _ := json.Marshal(&msg)
 			log.Printf("Slack POST Webhook error=\"%s\" request=\"%s\"", err.Error(), string(raw))
 		}
