@@ -351,6 +351,26 @@ func main() {
 		queue <- allianceCheckList[i].AllianceID
 	}
 	close(queue)
+
+	wg.Add(1)
+	financeTokens := make(map[int32]bool)
+	go func() {
+		neucoreTokenData, resp, err := app.Neu.ApplicationESIApi.EsiEveLoginTokenDataV1(app.NeucoreContext, "finance").Execute()
+		if err != nil || resp.StatusCode != http.StatusOK {
+			eString := "nil"
+			if err != nil {
+				eString = err.Error()
+			}
+			generalErrors = append(generalErrors, fmt.Sprintf("Neucore: Error getting finance token data statusCode=%d error=%s", resp.StatusCode, eString))
+		}
+		for _, v := range neucoreTokenData {
+			financeTokens[v.GetCorporationId()] = true
+		}
+		if _, ok := financeTokens[0]; ok {
+			delete(financeTokens, 0)
+		}
+	}()
+
 	wg.Wait()
 	log.Printf("Alliance Check Complete: %f", time.Since(startTime).Seconds())
 
@@ -374,6 +394,11 @@ func main() {
 				}
 
 				corpResult := app.verifyCorporation(corpID, charIgnoreList, startTime)
+
+				if financeTokens[corpID] {
+					corpResult.Errors = append([]string{"Corporation missing finance token"}, corpResult.Errors...)
+				}
+
 				taxMutex.Lock()
 				totalOwed += corpResult.TaxOwed
 				taxMutex.Unlock()
