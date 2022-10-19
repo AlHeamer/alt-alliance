@@ -396,7 +396,7 @@ func main() {
 
 				corpResult := app.verifyCorporation(corpID, charIgnoreList, startTime)
 
-				if financeTokens[corpID] {
+				if tok, ok := financeTokens[corpID]; !ok || (ok && tok == false) {
 					corpResult.Errors = append([]string{"Corporation missing finance token"}, corpResult.Errors...)
 				}
 
