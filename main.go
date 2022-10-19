@@ -396,8 +396,10 @@ func main() {
 
 				corpResult := app.verifyCorporation(corpID, charIgnoreList, startTime)
 
-				if tok, ok := financeTokens[corpID]; !ok || (ok && tok == false) {
-					corpResult.Errors = append([]string{"Corporation missing finance token"}, corpResult.Errors...)
+				if len(financeTokens) > 0 {
+					if tok, ok := financeTokens[corpID]; !ok || (ok && tok == false) {
+						corpResult.Errors = append([]string{"Corporation missing finance token"}, corpResult.Errors...)
+					}
 				}
 
 				taxMutex.Lock()
