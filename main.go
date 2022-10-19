@@ -355,6 +355,7 @@ func main() {
 	wg.Add(1)
 	financeTokens := make(map[int32]bool)
 	go func() {
+		defer wg.Done()
 		neucoreTokenData, resp, err := app.Neu.ApplicationESIApi.EsiEveLoginTokenDataV1(app.NeucoreContext, "finance").Execute()
 		if err != nil || resp.StatusCode != http.StatusOK {
 			eString := "nil"
