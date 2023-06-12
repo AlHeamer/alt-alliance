@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -279,7 +278,7 @@ func main() {
 		go func() {
 			defer wg.Done()
 			for corpID := range queue {
-				if corpIsOnIgnoreList(corpID, app.Config.IgnoreCorps) {
+				if contains(corpID, app.Config.IgnoreCorps) {
 					log.Printf("Ignored Corporation id=%d", corpID)
 					continue
 				}
@@ -495,7 +494,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 		if app.Checks.Check(CHAR_EXISTS_IN_NEUCORE) &&
 			!characterExistsInNeucore(int64(charID), neuCorpMembers) {
 			// missing character
-			if characterIsOnIgnoreList(charID, charIgnoreList) {
+			if contains(charID, charIgnoreList) {
 				log.Printf("Ignored Character missing from neucore id=%d", charID)
 				continue
 			}
@@ -504,7 +503,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 			if app.Checks.Check(CHAR_VALID_NEUCORE_TOKEN) &&
 				!characterHasValidNeucoreToken(int64(charID), neuCorpMembers) {
 				// invalid token
-				if characterIsOnIgnoreList(charID, charIgnoreList) {
+				if contains(charID, charIgnoreList) {
 					log.Printf("Ignored Character with invalid neucore token id=%d", charID)
 					continue
 				}
@@ -537,10 +536,10 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 
 		for _, char := range characterGroups {
 			charID := int32(char.Character.GetId())
-			if characterIsOnIgnoreList(charID, charIgnoreList) {
+			if contains(charID, charIgnoreList) {
 				continue
 			}
-			if int32ExistsInArray(charID, naughtyIDs) {
+			if contains(charID, naughtyIDs) {
 				continue
 			}
 
@@ -577,7 +576,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	var missingGroupMemberStrings []string
 	numMembersMissingGroup := len(charsMissingGroup)
 	if numMembersMissingGroup > 0 {
-		chunkSize := integerMin(defaultChunkSize, numMembersMissingGroup)
+		chunkSize := min(defaultChunkSize, numMembersMissingGroup)
 		chars := charsMissingGroup[:chunkSize]
 		for i := range chars {
 			missingGroupMemberStrings = append(missingGroupMemberStrings, fmt.Sprintf("<%s://%s/#UserAdmin/%d|%s>", app.Config.NeucoreHTTPScheme, app.Config.NeucoreDomain, charsMissingGroup[i], namesMissingGroup[i]))
@@ -589,7 +588,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	}
 
 	if numMissingMembers > 0 {
-		missingChunkSize := integerMin(defaultChunkSize, numMissingMembers)
+		missingChunkSize := min(defaultChunkSize, numMissingMembers)
 		if len(missingMemberStrings) > missingChunkSize {
 			missingMemberStrings = append(missingMemberStrings, fmt.Sprintf("and %d more...", numMissingMembers-missingChunkSize))
 		}
@@ -600,7 +599,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	}
 
 	if numInvalidMembers > 0 {
-		invalidChunkSize := integerMin(defaultChunkSize, numInvalidMembers)
+		invalidChunkSize := min(defaultChunkSize, numInvalidMembers)
 		if len(invalidMemberStrings) > invalidChunkSize {
 			invalidMemberStrings = append(invalidMemberStrings, fmt.Sprintf("and %d more...", numInvalidMembers-invalidChunkSize))
 		}
@@ -611,7 +610,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	}
 
 	if numMembersMissingGroup > 0 {
-		missingChunkSize := integerMin(defaultChunkSize, numMembersMissingGroup)
+		missingChunkSize := min(defaultChunkSize, numMembersMissingGroup)
 		missingGroupMemberStrings = missingGroupMemberStrings[:missingChunkSize]
 		results.Warnings = append(results.Warnings, fmt.Sprintf(
 			"Characters without 'member' roles: %d\n%s",
@@ -628,121 +627,6 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 		numMissingMembers,
 		numInvalidMembers,
 		numMembersMissingGroup)
-}
-
-// 2022-09-13: Slack currently has a bug where it will resend messages n times where n = totalBlockTextLength / 4040
-func getBlocksUpperBugged(blocks []slack.Block, lower int, upper int) int {
-	var textLength int
-	newUpper := lower
-	for i := lower; i < upper; i++ {
-		if blocks[i].BlockType() != slack.MBTSection {
-			newUpper++
-			continue
-		}
-
-		b := blocks[i].(*slack.SectionBlock)
-		textLength += len(b.Text.Text)
-		if textLength < 4040 {
-			newUpper++
-		} else {
-			break
-		}
-	}
-	return newUpper
-}
-
-func (app *app) generateAndSendWebhook(startTime time.Time, generalErrors []string, blocks *[]slack.Block) {
-	generateStatusFooterBlock(startTime, generalErrors, blocks)
-
-	// slack has a 50 block limit per message, and 1 message per second limit ("burstable.")
-	const blocksPerMessage = 50
-	blockArray := *blocks
-	queuedBlocks := len(blockArray)
-	var batchLen int
-	for totalSentBlocks := 0; totalSentBlocks < queuedBlocks; totalSentBlocks += batchLen {
-		upper := integerMin(totalSentBlocks+blocksPerMessage, queuedBlocks)
-		upper = getBlocksUpperBugged(blockArray, totalSentBlocks, upper)
-		batch := blockArray[totalSentBlocks:upper]
-		batchLen = len(batch)
-
-		m := slack.Blocks{BlockSet: batch}
-		msg := &slack.WebhookMessage{
-			Blocks: &m,
-		}
-
-		j, _ := json.Marshal(msg)
-		log.Printf("posting webhook batchLen=%d totalSentBlocks=%d queuedBlocks=%d range=%d:%d payload=%s", batchLen, totalSentBlocks, queuedBlocks, totalSentBlocks, upper, string(j))
-		// send rate is 1 message per second "burstable"
-		time.Sleep(1 * time.Second)
-		if err := slack.PostWebhook(app.Config.SlackWebhookURL, msg); err != nil {
-			raw, _ := json.Marshal(&msg)
-			log.Printf("Slack POST Webhook error=\"%s\" request=\"%s\"", err.Error(), string(raw))
-		}
-	}
-}
-
-func generateStatusFooterBlock(startTime time.Time, generalErrors []string, blocks *[]slack.Block) {
-	generalErrors = append(generalErrors, fmt.Sprintf("Completed execution in %f", time.Since(startTime).Seconds()))
-	execFooter := slack.NewTextBlockObject("mrkdwn", strings.Join(generalErrors, "\n"), false, false)
-	*blocks = append(*blocks, slack.NewDividerBlock())
-	*blocks = append(*blocks, slack.NewContextBlock("", execFooter))
-}
-
-func int32ExistsInArray(needle int32, haystack []int32) bool {
-	for _, val := range haystack {
-		if val == needle {
-			return true
-		}
-	}
-	return false
-}
-
-func corpIsOnIgnoreList(needle int32, haystack []int32) bool {
-	for _, val := range haystack {
-		if val == needle {
-			return true
-		}
-	}
-	return false
-}
-
-func characterIsOnIgnoreList(needle int32, haystack []int32) bool {
-	for _, val := range haystack {
-		if val == needle {
-			return true
-		}
-	}
-	return false
-}
-
-func characterExistsInNeucore(needle int64, haystack []neucoreapi.Character) bool {
-	for _, val := range haystack {
-		if val.GetId() == needle {
-			return true
-		}
-	}
-
-	return false
-}
-
-func characterHasValidNeucoreToken(needle int64, haystack []neucoreapi.Character) bool {
-	for _, val := range haystack {
-		if val.GetId() == needle {
-			return val.GetValidToken()
-		}
-	}
-
-	// Character missing from neucore.
-	return false
-}
-
-func playerBelongsToGroup(needle string, haystack []neucoreapi.Group) bool {
-	for _, val := range haystack {
-		if val.GetName() == needle {
-			return true
-		}
-	}
-	return false
 }
 
 func (app *app) esiHealthCheck() ([]string, error) {
@@ -775,69 +659,6 @@ func (app *app) esiHealthCheck() ([]string, error) {
 	return generalErrors, err
 }
 
-func createCorpBlocks(results corpVerificationResult) []slack.Block {
-	// iterate errors map
-	var sb strings.Builder
-	fmt.Fprintf(
-		&sb,
-		"*<https://evewho.com/corporation/%d|%s>* [CEO: <https://evewho.com/character/%d|%s> - <https://evewho.com/character/%d|%s>] %d Members",
-		results.CorpID,
-		results.CorpName,
-		results.Ceo.GetId(),
-		results.Ceo.Name,
-		results.CeoMain.GetId(),
-		results.CeoMain.Name,
-		results.MemberCount,
-	)
-	for _, value := range results.Errors {
-		fmt.Fprintf(&sb, "\n  :octagonal_sign: %s", value)
-	}
-	for _, value := range results.Warnings {
-		fmt.Fprintf(&sb, "\n  :warning: %s", value)
-	}
-	for _, value := range results.Info {
-		fmt.Fprintf(&sb, "\n  :information_source: %s", value)
-	}
-
-	blockText := sb.String()
-	if len(blockText) > 3000 {
-		blockText = blockText[:2985]
-		open := strings.LastIndex(blockText, "<")
-		close := strings.LastIndex(blockText, ">")
-		if open > close {
-			blockText = blockText[:open]
-		}
-		blockText += "\n--TRUNCATED--"
-	}
-
-	corpIssues := slack.NewTextBlockObject("mrkdwn", blockText, false, false)
-	corpImage := slack.NewImageBlockElement(fmt.Sprintf("https://images.evetech.net/corporations/%d/logo", results.CorpID), results.CorpName)
-	corpSection := slack.NewSectionBlock(corpIssues, nil, slack.NewAccessory(corpImage))
-
-	return []slack.Block{corpSection}
-}
-
-func integerMin(a int, b int) int {
-	if a <= b {
-		return a
-	}
-	return b
-}
-
-func integer64Max(a int64, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func dateMax(a time.Time, b time.Time) time.Time {
-	if a.After(b) {
-		return a
-	}
-	return b
-}
-
 func (app *app) chunkNameRequest(naughtyIDs []int32, missingMembers []int32, invalidMembers []int32) ([]string, []string, error) {
 	const NAME_POST_LIMIT = 1000
 	if len(naughtyIDs) <= 0 {
@@ -847,7 +668,7 @@ func (app *app) chunkNameRequest(naughtyIDs []int32, missingMembers []int32, inv
 	var missingMemberStrings, invalidMemberStrings []string
 	naughtyCount := len(naughtyIDs)
 	for i := 0; i < len(naughtyIDs); i += NAME_POST_LIMIT {
-		batchIDs := naughtyIDs[i:integerMin(i+NAME_POST_LIMIT, naughtyCount)]
+		batchIDs := naughtyIDs[i:min(i+NAME_POST_LIMIT, naughtyCount)]
 		naughtyNames, response, err := app.ESI.ESI.UniverseApi.PostUniverseNames(context.TODO(), batchIDs, nil)
 		if err != nil {
 			return nil, nil, fmt.Errorf("error retreving bulk character names request=\"%v\" error=\"%s\"", naughtyIDs, err.Error())
@@ -861,10 +682,10 @@ func (app *app) chunkNameRequest(naughtyIDs []int32, missingMembers []int32, inv
 				continue
 			}
 
-			if int32ExistsInArray(name.Id, missingMembers) {
+			if contains(name.Id, missingMembers) {
 				missingMemberStrings = append(missingMemberStrings, fmt.Sprintf("<https://evewho.com/character/%d|%s>", name.Id, name.Name))
 			} else {
-				if int32ExistsInArray(name.Id, invalidMembers) {
+				if contains(name.Id, invalidMembers) {
 					invalidMemberStrings = append(invalidMemberStrings, fmt.Sprintf("<https://evewho.com/character/%d|%s>", name.Id, name.Name))
 				}
 			}
