@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,24 +17,26 @@ import (
 	"github.com/antihax/goesi/esi"
 	"github.com/antihax/goesi/optional"
 	neucoreapi "github.com/bravecollective/neucore-api-go"
-	"github.com/jinzhu/gorm"
-	_ "github.com/jinzhu/gorm/dialects/mysql"
 	"github.com/slack-go/slack"
 	"golang.org/x/oauth2"
 )
 
 type config struct {
 	NeucoreAppID            uint
-	Threads                 int `gorm:"default:20"`
+	Threads                 int `yaml:"default:20"`
 	CorpBaseTaxRate         float32
-	RequestTimeoutInSeconds int64  `gorm:"default:120"`
-	NeucoreHTTPScheme       string `gorm:"default:'http'"`
+	RequestTimeoutInSeconds uint   `yaml:"default:120"`
+	NeucoreHTTPScheme       string `yaml:"default:'http'"`
 	NeucoreDomain           string
 	NeucoreAppSecret        string
 	NeucoreUserAgent        string
-	NeucoreAPIBase          string
+	NeucoreAPIBase          string `yaml:"-"`
 	EsiUserAgent            string
 	SlackWebhookURL         string
+	CheckAlliances          []int32
+	CheckCorps              []int32
+	IgnoreCorps             []int32
+	IgnoreChars             []int32
 }
 
 type CorpCheck int
@@ -82,35 +83,12 @@ func (lhs CorpCheck) CSet(rhs CorpCheck, set bool) CorpCheck {
 
 type app struct {
 	Config           config
-	DB               *gorm.DB
 	ESI              *goesi.APIClient
 	ProxyESI         *goesi.APIClient
 	Neu              *neucoreapi.APIClient
 	NeucoreContext   context.Context
 	ProxyAuthContext context.Context
 	Checks           CorpCheck
-}
-
-type checkedAlliance struct {
-	gorm.Model
-	AllianceID int32
-}
-
-type checkedCorp struct {
-	gorm.Model
-	CorpID int32
-}
-
-type ignoredCorp struct {
-	gorm.Model
-	CorpID int32
-	Reason string
-}
-
-type ignoredCharacter struct {
-	gorm.Model
-	CharacterID int32
-	Reason      string
 }
 
 type corpVerificationResult struct {
@@ -130,32 +108,7 @@ var requiredRoles = [...]neucoreapi.Role{neucoreapi.APP, neucoreapi.APP_CHARS, n
 const dateFormat = "2006-01-02"
 const dateTimeFormat = "2006-01-02 15:04"
 
-func (app *app) initDB() {
-	var err error
-
-	// Setup DB
-	user := "root"
-	password := ""
-	host := "/tmp/mysql.sock"
-	dbName := "alt_alliance"
-	sqlString := "%s:%s@tcp(%s)/%s?charset=utf8&parseTime=True&loc=Local"
-	if u := os.Getenv("DB_USER"); u != "" {
-		user = u
-	}
-	if p := os.Getenv("DB_PASS"); p != "" {
-		password = p
-	}
-	if h := os.Getenv("DB_HOST"); h != "" {
-		host = h
-	}
-	if n := os.Getenv("DB_NAME"); n != "" {
-		dbName = n
-	}
-
-	flag.StringVar(&user, "u", user, "The username used to access the database. (env var DB_USER)")
-	flag.StringVar(&password, "p", password, "The password for the user. (env var DB_PASS)")
-	flag.StringVar(&host, "h", host, "The hostname of the database to connect to (can be a unix socket, ip address, or domain.) (env var DB_HOST)")
-	flag.StringVar(&dbName, "d", dbName, "The name of the database to use. (env var DB_NAME)")
+func (app *app) readFlags() {
 	var warStatus, structureAnchroing, structureOnline bool
 	flag.BoolVar(&warStatus, "notif-war-status", true, "Check for changes in war eligibility status")
 	flag.BoolVar(&structureAnchroing, "notif-structure-anchoring", true, "Check for anchoring structures")
@@ -178,24 +131,6 @@ func (app *app) initDB() {
 	app.Checks = app.Checks.CSet(CHAR_VALID_NEUCORE_TOKEN, charValid)
 	app.Checks = app.Checks.CSet(CHAR_HAS_MEMBER_ROLE, charMember)
 	log.Printf("will performing the following checks: 0b%s", strconv.FormatInt(int64(app.Checks), 2))
-
-	if host[0:1] == "/" {
-		sqlString = "%s:%s@unix(%s)/%s?charset=utf8&parseTime=True&loc=Local"
-	}
-
-	connArgs := fmt.Sprintf(sqlString, user, password, host, dbName)
-	// Uncomment if you are trying to debug DB issues. Will reveal your password in logs.
-	//log.Println(connArgs)
-	app.DB, err = gorm.Open("mysql", connArgs)
-	if err != nil {
-		log.Fatal(err.Error(), "\n\nDB connection error: Did you forget to specify database params?")
-	}
-
-	app.DB.AutoMigrate(&config{})
-	app.DB.AutoMigrate(&checkedAlliance{})
-	app.DB.AutoMigrate(&checkedCorp{})
-	app.DB.AutoMigrate(&ignoredCorp{})
-	app.DB.AutoMigrate(&ignoredCharacter{})
 }
 
 func (app *app) initApp() {
@@ -233,10 +168,9 @@ func main() {
 	log.Printf("Starting process...")
 	startTime := time.Now()
 
-	// Init DB and load config
+	// load config
 	var app app
-	app.initDB()
-	app.DB.First(&app.Config)
+	app.readFlags()
 	app.Config.NeucoreAPIBase = fmt.Sprintf("%s://%s/api", app.Config.NeucoreHTTPScheme, app.Config.NeucoreDomain)
 
 	// Init ESI, Neucore
@@ -281,17 +215,12 @@ func main() {
 
 	// Compile a list of all corps to check
 	var allCorps []int32
-	var corpCheckList []checkedCorp
-	app.DB.Select("corp_id").Find(&corpCheckList)
-	for _, corp := range corpCheckList {
-		allCorps = append(allCorps, corp.CorpID)
+	for _, corp := range app.Config.CheckCorps {
+		allCorps = append(allCorps, corp)
 	}
 
 	// Get alliance's corp list
-	var allianceCheckList []checkedAlliance
-	app.DB.Select("alliance_id").Find(&allianceCheckList)
-	queueLength := len(allianceCheckList)
-	queue := make(chan int32, queueLength)
+	queue := make(chan int32, len(app.Config.CheckAlliances))
 	mutex := &sync.Mutex{}
 	wg := sync.WaitGroup{}
 	for i := 0; i < app.Config.Threads; i++ {
@@ -313,8 +242,8 @@ func main() {
 		}()
 	}
 
-	for i := 0; i < queueLength; i++ {
-		queue <- allianceCheckList[i].AllianceID
+	for _, v := range app.Config.CheckAlliances {
+		queue <- v
 	}
 	close(queue)
 
@@ -342,24 +271,20 @@ func main() {
 	log.Printf("Alliance Check Complete: %f", time.Since(startTime).Seconds())
 
 	// check each corp in the alliance
-	queueLength = len(allCorps)
+	queueLength := len(allCorps)
 	queue = make(chan int32, queueLength)
-	var corpIgnoreList []ignoredCorp
-	var charIgnoreList []ignoredCharacter
-	app.DB.Select("corp_id").Find(&corpIgnoreList)
-	app.DB.Select("character_id").Find(&charIgnoreList)
 	var totalOwed float64
 	for i := 0; i < app.Config.Threads; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for corpID := range queue {
-				if corpIsOnIgnoreList(corpID, &corpIgnoreList) {
+				if corpIsOnIgnoreList(corpID, app.Config.IgnoreCorps) {
 					log.Printf("Ignored Corporation id=%d", corpID)
 					continue
 				}
 
-				corpResult := app.verifyCorporation(corpID, charIgnoreList, startTime)
+				corpResult := app.verifyCorporation(corpID, app.Config.IgnoreChars, startTime)
 
 				if len(financeTokens) > 0 {
 					if tok, ok := financeTokens[corpID]; !ok || (ok && tok == false) {
@@ -394,7 +319,7 @@ func main() {
 	app.generateAndSendWebhook(startTime, generalErrors, &blocks)
 }
 
-func (app *app) verifyCorporation(corpID int32, charIgnoreList []ignoredCharacter, startTime time.Time) corpVerificationResult {
+func (app *app) verifyCorporation(corpID int32, charIgnoreList []int32, startTime time.Time) corpVerificationResult {
 	now := time.Now()
 	results := corpVerificationResult{
 		CorpID:   corpID,
@@ -523,7 +448,7 @@ func (app *app) checkCeoNotifications(corpID int32, corpData *esi.GetCorporation
 	log.Printf("Parsed CEO's notifications after %f ceoID=%d corpID=%d", time.Since(startTime).Seconds(), corpData.CeoId, corpID)
 }
 
-func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult, charIgnoreList []ignoredCharacter, startTime time.Time) {
+func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult, charIgnoreList []int32, startTime time.Time) {
 	const defaultChunkSize = 30
 
 	// Get member list from ESI - datasource changes based on what corp you're querying, use the CEO's charID.
@@ -615,7 +540,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 			if characterIsOnIgnoreList(charID, charIgnoreList) {
 				continue
 			}
-			if int32ExistsInArray(charID, &naughtyIDs) {
+			if int32ExistsInArray(charID, naughtyIDs) {
 				continue
 			}
 
@@ -763,8 +688,8 @@ func generateStatusFooterBlock(startTime time.Time, generalErrors []string, bloc
 	*blocks = append(*blocks, slack.NewContextBlock("", execFooter))
 }
 
-func int32ExistsInArray(needle int32, haystack *[]int32) bool {
-	for _, val := range *haystack {
+func int32ExistsInArray(needle int32, haystack []int32) bool {
+	for _, val := range haystack {
 		if val == needle {
 			return true
 		}
@@ -772,18 +697,18 @@ func int32ExistsInArray(needle int32, haystack *[]int32) bool {
 	return false
 }
 
-func corpIsOnIgnoreList(needle int32, haystack *[]ignoredCorp) bool {
-	for _, val := range *haystack {
-		if val.CorpID == needle {
+func corpIsOnIgnoreList(needle int32, haystack []int32) bool {
+	for _, val := range haystack {
+		if val == needle {
 			return true
 		}
 	}
 	return false
 }
 
-func characterIsOnIgnoreList(needle int32, haystack []ignoredCharacter) bool {
+func characterIsOnIgnoreList(needle int32, haystack []int32) bool {
 	for _, val := range haystack {
-		if val.CharacterID == needle {
+		if val == needle {
 			return true
 		}
 	}
@@ -936,10 +861,10 @@ func (app *app) chunkNameRequest(naughtyIDs []int32, missingMembers []int32, inv
 				continue
 			}
 
-			if int32ExistsInArray(name.Id, &missingMembers) {
+			if int32ExistsInArray(name.Id, missingMembers) {
 				missingMemberStrings = append(missingMemberStrings, fmt.Sprintf("<https://evewho.com/character/%d|%s>", name.Id, name.Name))
 			} else {
-				if int32ExistsInArray(name.Id, &invalidMembers) {
+				if int32ExistsInArray(name.Id, invalidMembers) {
 					invalidMemberStrings = append(invalidMemberStrings, fmt.Sprintf("<https://evewho.com/character/%d|%s>", name.Id, name.Name))
 				}
 			}
