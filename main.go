@@ -17,6 +17,7 @@ import (
 	"github.com/antihax/goesi/optional"
 	neucoreapi "github.com/bravecollective/neucore-api-go"
 	"github.com/slack-go/slack"
+	"golang.org/x/exp/slices"
 	"golang.org/x/oauth2"
 )
 
@@ -80,6 +81,13 @@ func (lhs CorpCheck) CSet(rhs CorpCheck, set bool) CorpCheck {
 	return lhs
 }
 
+func min[T ~int](a, b T) T {
+	if a <= b {
+		return a
+	}
+	return b
+}
+
 type app struct {
 	Config           config
 	ESI              *goesi.APIClient
@@ -104,7 +112,6 @@ type corpVerificationResult struct {
 
 var requiredRoles = [...]neucoreapi.Role{neucoreapi.APP, neucoreapi.APP_CHARS, neucoreapi.APP_ESI, neucoreapi.APP_GROUPS}
 
-const dateFormat = "2006-01-02"
 const dateTimeFormat = "2006-01-02 15:04"
 
 func (app *app) readFlags() {
@@ -214,9 +221,7 @@ func main() {
 
 	// Compile a list of all corps to check
 	var allCorps []int32
-	for _, corp := range app.Config.CheckCorps {
-		allCorps = append(allCorps, corp)
-	}
+	allCorps = append(allCorps, app.Config.CheckCorps...)
 
 	// Get alliance's corp list
 	queue := make(chan int32, len(app.Config.CheckAlliances))
@@ -261,9 +266,7 @@ func main() {
 		for _, v := range neucoreTokenData {
 			financeTokens[v.GetCorporationId()] = true
 		}
-		if _, ok := financeTokens[0]; ok {
-			delete(financeTokens, 0)
-		}
+		delete(financeTokens, 0)
 	}()
 
 	wg.Wait()
@@ -278,7 +281,7 @@ func main() {
 		go func() {
 			defer wg.Done()
 			for corpID := range queue {
-				if contains(corpID, app.Config.IgnoreCorps) {
+				if slices.Contains(app.Config.IgnoreCorps, corpID) {
 					log.Printf("Ignored Corporation id=%d", corpID)
 					continue
 				}
@@ -286,7 +289,7 @@ func main() {
 				corpResult := app.verifyCorporation(corpID, app.Config.IgnoreChars, startTime)
 
 				if len(financeTokens) > 0 {
-					if tok, ok := financeTokens[corpID]; !ok || (ok && tok == false) {
+					if tok, ok := financeTokens[corpID]; !ok || (ok && !tok) {
 						corpResult.Errors = append([]string{"Corporation missing finance token"}, corpResult.Errors...)
 					}
 				}
@@ -492,18 +495,22 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	var invalidMembers []int32
 	for _, charID := range esiCorpMembers {
 		if app.Checks.Check(CHAR_EXISTS_IN_NEUCORE) &&
-			!characterExistsInNeucore(int64(charID), neuCorpMembers) {
+			!slices.ContainsFunc[neucoreapi.Character](neuCorpMembers, func(c neucoreapi.Character) bool {
+				return c.GetId() == int64(charID)
+			}) {
 			// missing character
-			if contains(charID, charIgnoreList) {
+			if slices.Contains(charIgnoreList, charID) {
 				log.Printf("Ignored Character missing from neucore id=%d", charID)
 				continue
 			}
 			missingMembers = append(missingMembers, charID)
 		} else {
 			if app.Checks.Check(CHAR_VALID_NEUCORE_TOKEN) &&
-				!characterHasValidNeucoreToken(int64(charID), neuCorpMembers) {
+				!slices.ContainsFunc[neucoreapi.Character](neuCorpMembers, func(c neucoreapi.Character) bool {
+					return c.GetId() == int64(charID)
+				}) {
 				// invalid token
-				if contains(charID, charIgnoreList) {
+				if slices.Contains(charIgnoreList, charID) {
 					log.Printf("Ignored Character with invalid neucore token id=%d", charID)
 					continue
 				}
@@ -536,14 +543,16 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 
 		for _, char := range characterGroups {
 			charID := int32(char.Character.GetId())
-			if contains(charID, charIgnoreList) {
+			if slices.Contains(charIgnoreList, charID) {
 				continue
 			}
-			if contains(charID, naughtyIDs) {
+			if slices.Contains(naughtyIDs, charID) {
 				continue
 			}
 
-			if !playerBelongsToGroup("member", char.Groups) {
+			if !slices.ContainsFunc[neucoreapi.Group](char.Groups, func(g neucoreapi.Group) bool {
+				return g.GetName() == "member"
+			}) {
 				// check for invalid token on other characters.
 				playerChars, _, err := app.Neu.ApplicationCharactersApi.CharactersV1(app.NeucoreContext, charID).Execute()
 				if err != nil {
@@ -682,10 +691,10 @@ func (app *app) chunkNameRequest(naughtyIDs []int32, missingMembers []int32, inv
 				continue
 			}
 
-			if contains(name.Id, missingMembers) {
+			if slices.Contains(missingMembers, name.Id) {
 				missingMemberStrings = append(missingMemberStrings, fmt.Sprintf("<https://evewho.com/character/%d|%s>", name.Id, name.Name))
 			} else {
-				if contains(name.Id, invalidMembers) {
+				if slices.Contains(invalidMembers, name.Id) {
 					invalidMemberStrings = append(invalidMemberStrings, fmt.Sprintf("<https://evewho.com/character/%d|%s>", name.Id, name.Name))
 				}
 			}
