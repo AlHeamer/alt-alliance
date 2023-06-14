@@ -1,0 +1,33 @@
+# AppID created in neucore
+NeucoreAppID: 1
+# Number of corporations to check in paralell
+Threads: 20
+# Add corp error if tax rate is not >=
+# 100% = 1.0, 75% = 0.75, etc.
+CorpBaseTaxRate: 0.1
+RequestTimeoutInSeconds: 120
+NeucoreHTTPScheme: https
+NeucoreDomain: neucore.tian-space.net
+NeucoreAppSecret: super-secret-code
+NeucoreUserAgent: net.tian-space.alt-alliance
+EsiUserAgent: net.tian-space.alt-alliance
+SlackWebhookUrl: ""
+# Check/Ignore lists can be formatted as [1,2,3] or one per line as below
+CheckAlliances:
+  - 434243723 # C C P Alliance
+CheckCorps:
+  - 1000001   # Doomheim
+IgnoreCorps: [ 109299958, 216121397 ] # CCP, Game Masters
+IgnoreChars:
+Checks:
+  Notifications: # Check the following CEO notifications
+    StructureAnchoring: true
+    StructureOnlining: true
+    WarStatus: true
+  Corporation:          # Check corporation info
+    TaxRate: true       # Uses CorpBaseTaxRate above
+    WarEligible: true   # Error if the corp is war eligible
+  Characters:
+    Exists: true        # check character exists in neucore
+    ValidToken: true    # check neucore account tokens are valid
+    MemberStatus: true  # check neucore account has 'member' status

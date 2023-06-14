@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -16,70 +16,48 @@ import (
 	"github.com/antihax/goesi/esi"
 	"github.com/antihax/goesi/optional"
 	neucoreapi "github.com/bravecollective/neucore-api-go"
+	"github.com/go-yaml/yaml"
 	"github.com/slack-go/slack"
 	"golang.org/x/exp/slices"
+	"golang.org/x/exp/slog"
 	"golang.org/x/oauth2"
 )
 
 type config struct {
-	NeucoreAppID            uint
-	Threads                 int `yaml:"default:20"`
-	CorpBaseTaxRate         float32
-	RequestTimeoutInSeconds uint   `yaml:"default:120"`
-	NeucoreHTTPScheme       string `yaml:"default:'http'"`
-	NeucoreDomain           string
-	NeucoreAppSecret        string
-	NeucoreUserAgent        string
-	NeucoreAPIBase          string `yaml:"-"`
-	EsiUserAgent            string
-	SlackWebhookURL         string
-	CheckAlliances          []int32
-	CheckCorps              []int32
-	IgnoreCorps             []int32
-	IgnoreChars             []int32
+	NeucoreAppID            uint                       `yaml:"NeucoreAppID"`
+	Threads                 int                        `yaml:"Threads" default:"20"`
+	CorpBaseTaxRate         float32                    `yaml:"CorpBaseTaxRate"`
+	RequestTimeoutInSeconds uint                       `yaml:"RequestTimeoutInSeconds" default:"120"`
+	NeucoreHTTPScheme       string                     `yaml:"NeucoreHTTPScheme" default:"http"`
+	NeucoreDomain           string                     `yaml:"NeucoreDomain"`
+	NeucoreAppSecret        string                     `yaml:"NeucoreAppSecret"`
+	NeucoreUserAgent        string                     `yaml:"NeucoreUserAgent"`
+	NeucoreAPIBase          string                     `yaml:"-"`
+	EsiUserAgent            string                     `yaml:"EsiUserAgent"`
+	SlackWebhookURL         string                     `yaml:"SlackWebhookURL"`
+	CheckAlliances          []int32                    `yaml:"CheckAlliances"`
+	CheckCorps              []int32                    `yaml:"CheckCorps"`
+	IgnoreCorps             []int32                    `yaml:"IgnoreCorps"`
+	IgnoreChars             []int32                    `yaml:"IgnoreChars"`
+	Checks                  map[string]map[string]bool `yaml:"Checks"`
 }
-
-type CorpCheck int
 
 const (
 	// ceo notifictaions
-	NOTIF_WAR_ELIGIBLE_CHANGED CorpCheck = 1 << iota // No longer war eligible or newly war eligible
-	NOTIF_STRUCTURE_ANCHORING
-	NOTIF_STRUCTURE_ONLINE
-	// general corp info
-	CORP_TAX_RATE
-	CORP_WAR_ELIGIBLE
-	// naughty character checks
-	CHAR_EXISTS_IN_NEUCORE
-	CHAR_VALID_NEUCORE_TOKEN
-	CHAR_HAS_MEMBER_ROLE
-)
-const (
-	CORP_CHECK_MASK_ALL   CorpCheck = -1
-	CORP_CHECK_MASK_NONE  CorpCheck = 0
-	CORP_CHECK_MASK_NOTIF CorpCheck = 0b000000111
-	CORP_CHECK_MASK_CORP  CorpCheck = 0b000111000
-	CORP_CHECK_MASK_CHAR  CorpCheck = 0b111000000
-)
+	CheckNotifs    = "Notifications"
+	NotifAnchoring = "StructureAnchoring"
+	NotifOnlining  = "StructureOnlining"
+	NotifWarStatus = "WarStatus"
 
-func (lhs CorpCheck) Check(rhs CorpCheck) bool {
-	return lhs&rhs == rhs
-}
-func (lhs CorpCheck) CheckAny(rhs CorpCheck) bool {
-	return lhs&rhs > 0
-}
-func (lhs CorpCheck) Set(rhs CorpCheck) CorpCheck {
-	return lhs | rhs
-}
-func (lhs CorpCheck) Unset(rhs CorpCheck) CorpCheck {
-	return lhs &^ rhs
-}
-func (lhs CorpCheck) CSet(rhs CorpCheck, set bool) CorpCheck {
-	if set {
-		return lhs.Set(rhs)
-	}
-	return lhs
-}
+	CheckCorps      = "Corporation"
+	CorpTaxRate     = "TaxRate"
+	CorpWarEligible = "WarEligible"
+
+	CheckChars  = "Characters"
+	CharsExist  = "Exists"
+	CharsValid  = "ValidToken"
+	CharsMember = "MemberStatus"
+)
 
 func min[T ~int](a, b T) T {
 	if a <= b {
@@ -95,7 +73,6 @@ type app struct {
 	Neu              *neucoreapi.APIClient
 	NeucoreContext   context.Context
 	ProxyAuthContext context.Context
-	Checks           CorpCheck
 }
 
 type corpVerificationResult struct {
@@ -114,29 +91,24 @@ var requiredRoles = [...]neucoreapi.Role{neucoreapi.APP, neucoreapi.APP_CHARS, n
 
 const dateTimeFormat = "2006-01-02 15:04"
 
-func (app *app) readFlags() {
-	var warStatus, structureAnchroing, structureOnline bool
-	flag.BoolVar(&warStatus, "notif-war-status", true, "Check for changes in war eligibility status")
-	flag.BoolVar(&structureAnchroing, "notif-structure-anchoring", true, "Check for anchoring structures")
-	flag.BoolVar(&structureOnline, "notif-structure-online", true, "Check for onlining structures")
-	var corpTaxRate, corpWarEligible bool
-	flag.BoolVar(&corpTaxRate, "corp-tax-rate", true, "Check corporation tax rate is set correctly")
-	flag.BoolVar(&corpWarEligible, "corp-war-eligible", true, "Check corporation war eligibility")
-	var charExists, charValid, charMember bool
-	flag.BoolVar(&charExists, "char-exists", true, "Check that characters exist in neucore")
-	flag.BoolVar(&charValid, "char-valid-token", true, "Check that characters have a valid esi token in neucore")
-	flag.BoolVar(&charMember, "char-member-role", true, "Check that characters have the 'member' role in neucore")
+func (app *app) readFlags(l *slog.Logger) error {
+	var configFile string
+	flag.StringVar(&configFile, "f", "./config.yaml", "Config file to use")
 	flag.Parse()
 
-	app.Checks = app.Checks.CSet(NOTIF_WAR_ELIGIBLE_CHANGED, warStatus)
-	app.Checks = app.Checks.CSet(NOTIF_STRUCTURE_ANCHORING, structureAnchroing)
-	app.Checks = app.Checks.CSet(NOTIF_STRUCTURE_ONLINE, structureOnline)
-	app.Checks = app.Checks.CSet(CORP_TAX_RATE, corpTaxRate)
-	app.Checks = app.Checks.CSet(CORP_WAR_ELIGIBLE, corpWarEligible)
-	app.Checks = app.Checks.CSet(CHAR_EXISTS_IN_NEUCORE, charExists)
-	app.Checks = app.Checks.CSet(CHAR_VALID_NEUCORE_TOKEN, charValid)
-	app.Checks = app.Checks.CSet(CHAR_HAS_MEMBER_ROLE, charMember)
-	log.Printf("will performing the following checks: 0b%s", strconv.FormatInt(int64(app.Checks), 2))
+	var data []byte
+	var err error
+	if data, err = os.ReadFile(configFile); err != nil {
+		l.Error("error reading config file", slog.String("configFile", configFile), slog.Any("error", err))
+		return err
+	}
+	if err = yaml.Unmarshal(data, &app.Config); err != nil {
+		l.Error("error parsing config file", slog.String("configFile", configFile), slog.Any("error", err))
+		return err
+	}
+
+	l.Info("will perform the following", slog.Any("checks", app.Config.Checks))
+	return nil
 }
 
 func (app *app) initApp() {
@@ -171,17 +143,22 @@ func (app *app) initApp() {
 }
 
 func main() {
-	log.Printf("Starting process...")
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
+	logger.Info("starting process...")
 	startTime := time.Now()
 
 	// load config
 	var app app
-	app.readFlags()
+	if err := app.readFlags(logger); err != nil {
+		os.Exit(1)
+	}
+
 	app.Config.NeucoreAPIBase = fmt.Sprintf("%s://%s/api", app.Config.NeucoreHTTPScheme, app.Config.NeucoreDomain)
 
 	// Init ESI, Neucore
 	app.initApp()
-	log.Printf("Init Complete: %f", time.Since(startTime).Seconds())
+	logger.Info("init complete", slog.Duration("duration", time.Since(startTime)))
 
 	// Perform ESI Health check.
 	var blocks []slack.Block
@@ -371,20 +348,20 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList []int32, startTim
 	///
 	/// Check CEO's notifications (cached 10 minutes)
 	///
-	if app.Checks.CheckAny(CORP_CHECK_MASK_NOTIF) {
+	if len(app.Config.Checks[CheckCorps]) > 0 {
 		app.checkCeoNotifications(corpID, &corpData, &results, now, startTime)
 	}
 
 	///
 	/// Check corp info and member lists (cached 1 hour)
 	///
-	if app.Checks.Check(CORP_TAX_RATE) && corpData.TaxRate < app.Config.CorpBaseTaxRate {
+	if app.Config.Checks[CheckCorps][CorpTaxRate] && corpData.TaxRate < app.Config.CorpBaseTaxRate {
 		results.Errors = append(results.Errors, fmt.Sprintf("Tax rate is %.f%% (expected at least %.f%%)", corpData.TaxRate*100, app.Config.CorpBaseTaxRate*100))
 	}
-	if app.Checks.Check(CORP_WAR_ELIGIBLE) && corpData.WarEligible {
+	if app.Config.Checks[CheckCorps][CorpWarEligible] && corpData.WarEligible {
 		results.Errors = append(results.Errors, "Corporation is War Eligible.")
 	}
-	if app.Checks.CheckAny(CORP_CHECK_MASK_CHAR) {
+	if len(app.Config.Checks[CheckChars]) > 0 {
 		app.discoverNaughtyMembers(corpID, &corpData, &results, charIgnoreList, startTime)
 	}
 
@@ -423,20 +400,20 @@ func (app *app) checkCeoNotifications(corpID int32, corpData *esi.GetCorporation
 		msgLevel := &results.Errors
 		switch notif.Type_ {
 		case "CorpNoLongerWarEligible":
-			if app.Checks.Check(NOTIF_WAR_ELIGIBLE_CHANGED) {
+			if app.Config.Checks[CheckNotifs][NotifWarStatus] {
 				msg = "No longer war eligible"
 				msgLevel = &results.Info
 			}
 		case "CorpBecameWarEligible":
-			if app.Checks.Check(NOTIF_WAR_ELIGIBLE_CHANGED) {
+			if app.Config.Checks[CheckNotifs][NotifWarStatus] {
 				msg = "Became war eligible"
 			}
 		case "StructureAnchoring":
-			if app.Checks.Check(NOTIF_STRUCTURE_ANCHORING) {
+			if app.Config.Checks[CheckNotifs][NotifAnchoring] {
 				msg = "Has a structure anchoring"
 			}
 		case "StructureOnline":
-			if app.Checks.Check(NOTIF_STRUCTURE_ONLINE) {
+			if app.Config.Checks[CheckNotifs][NotifOnlining] {
 				msg = "Has onlined a structure"
 			}
 		}
@@ -494,7 +471,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	var missingMembers []int32
 	var invalidMembers []int32
 	for _, charID := range esiCorpMembers {
-		if app.Checks.Check(CHAR_EXISTS_IN_NEUCORE) &&
+		if app.Config.Checks[CheckChars][CharsExist] &&
 			!slices.ContainsFunc[neucoreapi.Character](neuCorpMembers, func(c neucoreapi.Character) bool {
 				return c.GetId() == int64(charID)
 			}) {
@@ -505,7 +482,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 			}
 			missingMembers = append(missingMembers, charID)
 		} else {
-			if app.Checks.Check(CHAR_VALID_NEUCORE_TOKEN) &&
+			if app.Config.Checks[CheckChars][CharsValid] &&
 				!slices.ContainsFunc[neucoreapi.Character](neuCorpMembers, func(c neucoreapi.Character) bool {
 					return c.GetId() == int64(charID)
 				}) {
@@ -535,7 +512,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	// Check for characters in Neucore, but lacking 'member' group (no chars in brave proper, or gone inactive)
 	var charsMissingGroup []int32
 	var namesMissingGroup []string
-	if app.Checks.Check(CHAR_HAS_MEMBER_ROLE) {
+	if app.Config.Checks[CheckChars][CharsMember] {
 		characterGroups, _, err := app.Neu.ApplicationGroupsApi.GroupsBulkV1(app.NeucoreContext).RequestBody(esiCorpMembers).Execute()
 		if err != nil {
 			log.Printf("Neu: Error retreiving bulk character groups error=\"%s\"", err.Error())
