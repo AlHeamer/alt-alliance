@@ -73,6 +73,8 @@ type app struct {
 	Neu              *neucoreapi.APIClient
 	NeucoreContext   context.Context
 	ProxyAuthContext context.Context
+	startTime        time.Time
+	logger           *slog.Logger
 }
 
 type corpVerificationResult struct {
@@ -91,7 +93,10 @@ var requiredRoles = [...]neucoreapi.Role{neucoreapi.APP, neucoreapi.APP_CHARS, n
 
 const dateTimeFormat = "2006-01-02 15:04"
 
-func (app *app) readFlags(l *slog.Logger) error {
+func (app *app) initApp() error {
+	defer app.perfTime("initApp", nil)
+
+	// read command line flags to get config file, then parse into app.config
 	var configFile string
 	flag.StringVar(&configFile, "f", "./config.yaml", "Config file to use")
 	flag.Parse()
@@ -99,19 +104,16 @@ func (app *app) readFlags(l *slog.Logger) error {
 	var data []byte
 	var err error
 	if data, err = os.ReadFile(configFile); err != nil {
-		l.Error("error reading config file", slog.String("configFile", configFile), slog.Any("error", err))
+		app.logger.Error("error reading config file", slog.String("configFile", configFile), slog.Any("error", err))
 		return err
 	}
 	if err = yaml.Unmarshal(data, &app.Config); err != nil {
-		l.Error("error parsing config file", slog.String("configFile", configFile), slog.Any("error", err))
+		app.logger.Error("error parsing config file", slog.String("configFile", configFile), slog.Any("error", err))
 		return err
 	}
+	app.Config.NeucoreAPIBase = fmt.Sprintf("%s://%s/api", app.Config.NeucoreHTTPScheme, app.Config.NeucoreDomain)
+	app.logger.Info("will perform the following", slog.Any("checks", app.Config.Checks))
 
-	l.Info("will perform the following", slog.Any("checks", app.Config.Checks))
-	return nil
-}
-
-func (app *app) initApp() {
 	// Init ESI
 	httpc := &http.Client{Timeout: time.Second * time.Duration(app.Config.RequestTimeoutInSeconds)}
 	app.ESI = goesi.NewAPIClient(httpc, app.Config.EsiUserAgent)
@@ -140,31 +142,39 @@ func (app *app) initApp() {
 
 	app.Neu = neucoreapi.NewAPIClient(neucoreConfig)
 	app.NeucoreContext = context.WithValue(context.Background(), neucoreapi.ContextOAuth2, neucoreTokenSource)
+	return nil
+}
+
+func (app *app) perfTime(msg string, t *time.Time) {
+	if t == nil {
+		tt := time.Now()
+		t = &tt
+	}
+	app.logger.Info(msg, slog.Duration("duration", time.Since(*t)))
 }
 
 func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	slog.SetDefault(logger)
-	logger.Info("starting process...")
-	startTime := time.Now()
+	opts := &slog.HandlerOptions{
+		//Level: slog.LevelWarn,
+	}
+	app := app{
+		startTime: time.Now(),
+		logger:    slog.New(slog.NewTextHandler(os.Stdout, opts)),
+	}
+	defer app.perfTime("completed execution", &app.startTime)
+	slog.SetDefault(app.logger)
+	app.logger.Info("starting process...")
 
 	// load config
-	var app app
-	if err := app.readFlags(logger); err != nil {
+	if err := app.initApp(); err != nil {
 		os.Exit(1)
 	}
-
-	app.Config.NeucoreAPIBase = fmt.Sprintf("%s://%s/api", app.Config.NeucoreHTTPScheme, app.Config.NeucoreDomain)
-
-	// Init ESI, Neucore
-	app.initApp()
-	logger.Info("init complete", slog.Duration("duration", time.Since(startTime)))
 
 	// Perform ESI Health check.
 	var blocks []slack.Block
 	generalErrors, err := app.esiHealthCheck()
 	if err != nil {
-		app.generateAndSendWebhook(startTime, generalErrors, &blocks)
+		app.generateAndSendWebhook(app.startTime, generalErrors, &blocks)
 		return
 	}
 
@@ -174,7 +184,7 @@ func main() {
 		neucoreError := fmt.Sprintf("Error checking neucore app info. error=\"%s\"", err.Error())
 		log.Print(neucoreError)
 		generalErrors = append(generalErrors, neucoreError)
-		app.generateAndSendWebhook(startTime, generalErrors, &blocks)
+		app.generateAndSendWebhook(app.startTime, generalErrors, &blocks)
 		return
 	}
 
@@ -190,11 +200,11 @@ func main() {
 			msg := fmt.Sprintf("Neucore Config Error - Missing Roles:\nGiven: %v\nReq'd: %v", neucoreAppData.Roles, requiredRoles)
 			log.Print(msg)
 			generalErrors = append(generalErrors, msg)
-			app.generateAndSendWebhook(startTime, generalErrors, &blocks)
+			app.generateAndSendWebhook(app.startTime, generalErrors, &blocks)
 			return
 		}
 	}
-	log.Printf("API Check Complete: %f", time.Since(startTime).Seconds())
+	log.Printf("API Check Complete: %f", time.Since(app.startTime).Seconds())
 
 	// Compile a list of all corps to check
 	var allCorps []int32
@@ -247,7 +257,7 @@ func main() {
 	}()
 
 	wg.Wait()
-	log.Printf("Alliance Check Complete: %f", time.Since(startTime).Seconds())
+	log.Printf("Alliance Check Complete: %f", time.Since(app.startTime).Seconds())
 
 	// check each corp in the alliance
 	queueLength := len(allCorps)
@@ -263,7 +273,7 @@ func main() {
 					continue
 				}
 
-				corpResult := app.verifyCorporation(corpID, app.Config.IgnoreChars, startTime)
+				corpResult := app.verifyCorporation(corpID, app.Config.IgnoreChars, app.startTime)
 
 				if len(financeTokens) > 0 {
 					if tok, ok := financeTokens[corpID]; !ok || (ok && !tok) {
@@ -293,9 +303,9 @@ func main() {
 	if totalOwed > 2000000000 {
 		generalErrors = append(generalErrors, fmt.Sprintf("Total corp taxes owed=%.f", totalOwed))
 	}
-	log.Printf("Corp Check Complete: %f", time.Since(startTime).Seconds())
+	log.Printf("Corp Check Complete: %f", time.Since(app.startTime).Seconds())
 
-	app.generateAndSendWebhook(startTime, generalErrors, &blocks)
+	app.generateAndSendWebhook(app.startTime, generalErrors, &blocks)
 }
 
 func (app *app) verifyCorporation(corpID int32, charIgnoreList []int32, startTime time.Time) corpVerificationResult {
@@ -616,6 +626,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 }
 
 func (app *app) esiHealthCheck() ([]string, error) {
+	defer app.perfTime("esiHealthCheck", nil)
 	generalErrors := []string{}
 	var err error
 	status, _, err := app.ESI.Meta.MetaApi.GetStatus(context.TODO(), nil)
