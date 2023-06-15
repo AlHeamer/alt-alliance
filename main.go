@@ -67,12 +67,12 @@ func min[T ~int](a, b T) T {
 }
 
 type app struct {
-	Config           config
-	ESI              *goesi.APIClient
-	ProxyESI         *goesi.APIClient
-	Neu              *neucoreapi.APIClient
-	NeucoreContext   context.Context
-	ProxyAuthContext context.Context
+	config           config
+	esi              *goesi.APIClient
+	proxyEsi         *goesi.APIClient
+	neu              *neucoreapi.APIClient
+	neucoreContext   context.Context
+	proxyAuthContext context.Context
 	startTime        time.Time
 	logger           *slog.Logger
 }
@@ -107,41 +107,41 @@ func (app *app) initApp() error {
 		app.logger.Error("error reading config file", slog.String("configFile", configFile), slog.Any("error", err))
 		return err
 	}
-	if err = yaml.Unmarshal(data, &app.Config); err != nil {
+	if err = yaml.Unmarshal(data, &app.config); err != nil {
 		app.logger.Error("error parsing config file", slog.String("configFile", configFile), slog.Any("error", err))
 		return err
 	}
-	app.Config.NeucoreAPIBase = fmt.Sprintf("%s://%s/api", app.Config.NeucoreHTTPScheme, app.Config.NeucoreDomain)
-	app.logger.Info("will perform the following", slog.Any("checks", app.Config.Checks))
+	app.config.NeucoreAPIBase = fmt.Sprintf("%s://%s/api", app.config.NeucoreHTTPScheme, app.config.NeucoreDomain)
+	app.logger.Info("will perform the following", slog.Any("checks", app.config.Checks))
 
 	// Init ESI
-	httpc := &http.Client{Timeout: time.Second * time.Duration(app.Config.RequestTimeoutInSeconds)}
-	app.ESI = goesi.NewAPIClient(httpc, app.Config.EsiUserAgent)
+	httpc := &http.Client{Timeout: time.Second * time.Duration(app.config.RequestTimeoutInSeconds)}
+	app.esi = goesi.NewAPIClient(httpc, app.config.EsiUserAgent)
 
 	// Init Neucore ESI Proxy
-	app.ProxyESI = goesi.NewAPIClient(httpc, app.Config.NeucoreUserAgent)
-	app.ProxyESI.ChangeBasePath(app.Config.NeucoreAPIBase + "/app/v2/esi")
+	app.proxyEsi = goesi.NewAPIClient(httpc, app.config.NeucoreUserAgent)
+	app.proxyEsi.ChangeBasePath(app.config.NeucoreAPIBase + "/app/v2/esi")
 	proxyAuth := goesi.NewSSOAuthenticatorV2(httpc, "", "", "", []string{})
 	proxyToken := &oauth2.Token{
-		AccessToken: base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%d:%s", app.Config.NeucoreAppID, app.Config.NeucoreAppSecret))),
+		AccessToken: base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%d:%s", app.config.NeucoreAppID, app.config.NeucoreAppSecret))),
 		TokenType:   "bearer",
 	}
 	neucoreTokenSource := proxyAuth.TokenSource(proxyToken)
-	app.ProxyAuthContext = context.WithValue(context.Background(), goesi.ContextOAuth2, neucoreTokenSource)
+	app.proxyAuthContext = context.WithValue(context.Background(), goesi.ContextOAuth2, neucoreTokenSource)
 
 	// Init Neucore API
 	neucoreConfig := &neucoreapi.Configuration{
 		HTTPClient: httpc,
-		UserAgent:  app.Config.NeucoreUserAgent,
+		UserAgent:  app.config.NeucoreUserAgent,
 		Servers: neucoreapi.ServerConfigurations{{
-			URL:         app.Config.NeucoreAPIBase,
+			URL:         app.config.NeucoreAPIBase,
 			Description: "Neucore API Base",
 		}},
 		OperationServers: map[string]neucoreapi.ServerConfigurations{},
 	}
 
-	app.Neu = neucoreapi.NewAPIClient(neucoreConfig)
-	app.NeucoreContext = context.WithValue(context.Background(), neucoreapi.ContextOAuth2, neucoreTokenSource)
+	app.neu = neucoreapi.NewAPIClient(neucoreConfig)
+	app.neucoreContext = context.WithValue(context.Background(), neucoreapi.ContextOAuth2, neucoreTokenSource)
 	return nil
 }
 
@@ -179,7 +179,7 @@ func main() {
 	}
 
 	// Neucore Roles Check
-	neucoreAppData, _, err := app.Neu.ApplicationApi.ShowV1(app.NeucoreContext).Execute()
+	neucoreAppData, _, err := app.neu.ApplicationApi.ShowV1(app.neucoreContext).Execute()
 	if err != nil {
 		neucoreError := fmt.Sprintf("Error checking neucore app info. error=\"%s\"", err.Error())
 		log.Print(neucoreError)
@@ -208,18 +208,18 @@ func main() {
 
 	// Compile a list of all corps to check
 	var allCorps []int32
-	allCorps = append(allCorps, app.Config.CheckCorps...)
+	allCorps = append(allCorps, app.config.CheckCorps...)
 
 	// Get alliance's corp list
-	queue := make(chan int32, len(app.Config.CheckAlliances))
+	queue := make(chan int32, len(app.config.CheckAlliances))
 	mutex := &sync.Mutex{}
 	wg := sync.WaitGroup{}
-	for i := 0; i < app.Config.Threads; i++ {
+	for i := 0; i < app.config.Threads; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for allianceID := range queue {
-				allianceCorps, _, err := app.ESI.ESI.AllianceApi.GetAlliancesAllianceIdCorporations(context.TODO(), allianceID, nil)
+				allianceCorps, _, err := app.esi.ESI.AllianceApi.GetAlliancesAllianceIdCorporations(context.TODO(), allianceID, nil)
 				if err != nil {
 					logline := fmt.Sprintf("ESI: Error getting alliance corp list for allianceID=%d error=\"%s\"", allianceID, err.Error())
 					// dump and exit
@@ -233,7 +233,7 @@ func main() {
 		}()
 	}
 
-	for _, v := range app.Config.CheckAlliances {
+	for _, v := range app.config.CheckAlliances {
 		queue <- v
 	}
 	close(queue)
@@ -242,7 +242,7 @@ func main() {
 	financeTokens := make(map[int32]bool)
 	go func() {
 		defer wg.Done()
-		neucoreTokenData, resp, err := app.Neu.ApplicationESIApi.EsiEveLoginTokenDataV1(app.NeucoreContext, "finance").Execute()
+		neucoreTokenData, resp, err := app.neu.ApplicationESIApi.EsiEveLoginTokenDataV1(app.neucoreContext, "finance").Execute()
 		if err != nil || resp.StatusCode != http.StatusOK {
 			eString := "nil"
 			if err != nil {
@@ -263,17 +263,17 @@ func main() {
 	queueLength := len(allCorps)
 	queue = make(chan int32, queueLength)
 	var totalOwed float64
-	for i := 0; i < app.Config.Threads; i++ {
+	for i := 0; i < app.config.Threads; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for corpID := range queue {
-				if slices.Contains(app.Config.IgnoreCorps, corpID) {
+				if slices.Contains(app.config.IgnoreCorps, corpID) {
 					log.Printf("Ignored Corporation id=%d", corpID)
 					continue
 				}
 
-				corpResult := app.verifyCorporation(corpID, app.Config.IgnoreChars, app.startTime)
+				corpResult := app.verifyCorporation(corpID, app.config.IgnoreChars, app.startTime)
 
 				if len(financeTokens) > 0 {
 					if tok, ok := financeTokens[corpID]; !ok || (ok && !tok) {
@@ -318,7 +318,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList []int32, startTim
 	}
 
 	// Get public corp data
-	corpData, _, err := app.ESI.ESI.CorporationApi.GetCorporationsCorporationId(context.TODO(), corpID, nil)
+	corpData, _, err := app.esi.ESI.CorporationApi.GetCorporationsCorporationId(context.TODO(), corpID, nil)
 	if err != nil {
 		logline := fmt.Sprintf("ESI: Error getting public corp info. corpID=%d error=\"%s\"", corpID, err.Error())
 		log.Print(logline)
@@ -333,7 +333,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList []int32, startTim
 	log.Printf("Corp Data retrieved after %f corpID=%d", time.Since(startTime).Seconds(), corpID)
 
 	// Get CEO info from neucore
-	neuMain, response, err := app.Neu.ApplicationCharactersApi.MainV2(app.NeucoreContext, corpData.CeoId).Execute()
+	neuMain, response, err := app.neu.ApplicationCharactersApi.MainV2(app.neucoreContext, corpData.CeoId).Execute()
 	if err != nil {
 		logline := "Neu: Error retreiving CEO's main."
 		if response == nil {
@@ -358,20 +358,20 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList []int32, startTim
 	///
 	/// Check CEO's notifications (cached 10 minutes)
 	///
-	if len(app.Config.Checks[CheckCorps]) > 0 {
+	if len(app.config.Checks[CheckCorps]) > 0 {
 		app.checkCeoNotifications(corpID, &corpData, &results, now, startTime)
 	}
 
 	///
 	/// Check corp info and member lists (cached 1 hour)
 	///
-	if app.Config.Checks[CheckCorps][CorpTaxRate] && corpData.TaxRate < app.Config.CorpBaseTaxRate {
-		results.Errors = append(results.Errors, fmt.Sprintf("Tax rate is %.f%% (expected at least %.f%%)", corpData.TaxRate*100, app.Config.CorpBaseTaxRate*100))
+	if app.config.Checks[CheckCorps][CorpTaxRate] && corpData.TaxRate < app.config.CorpBaseTaxRate {
+		results.Errors = append(results.Errors, fmt.Sprintf("Tax rate is %.f%% (expected at least %.f%%)", corpData.TaxRate*100, app.config.CorpBaseTaxRate*100))
 	}
-	if app.Config.Checks[CheckCorps][CorpWarEligible] && corpData.WarEligible {
+	if app.config.Checks[CheckCorps][CorpWarEligible] && corpData.WarEligible {
 		results.Errors = append(results.Errors, "Corporation is War Eligible.")
 	}
-	if len(app.Config.Checks[CheckChars]) > 0 {
+	if len(app.config.Checks[CheckChars]) > 0 {
 		app.discoverNaughtyMembers(corpID, &corpData, &results, charIgnoreList, startTime)
 	}
 
@@ -381,7 +381,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList []int32, startTim
 func (app *app) checkCeoNotifications(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult, now time.Time, startTime time.Time) {
 	ceoStringID := optional.NewString(results.Ceo.Name)
 	notificationOps := &esi.GetCharactersCharacterIdNotificationsOpts{Datasource: ceoStringID}
-	notifications, response, err := app.ProxyESI.ESI.CharacterApi.GetCharactersCharacterIdNotifications(app.ProxyAuthContext, corpData.CeoId, notificationOps)
+	notifications, response, err := app.proxyEsi.ESI.CharacterApi.GetCharactersCharacterIdNotifications(app.proxyAuthContext, corpData.CeoId, notificationOps)
 	if err != nil {
 		logline := "Proxy: Error getting CEO's notifications."
 		if response == nil {
@@ -410,20 +410,20 @@ func (app *app) checkCeoNotifications(corpID int32, corpData *esi.GetCorporation
 		msgLevel := &results.Errors
 		switch notif.Type_ {
 		case "CorpNoLongerWarEligible":
-			if app.Config.Checks[CheckNotifs][NotifWarStatus] {
+			if app.config.Checks[CheckNotifs][NotifWarStatus] {
 				msg = "No longer war eligible"
 				msgLevel = &results.Info
 			}
 		case "CorpBecameWarEligible":
-			if app.Config.Checks[CheckNotifs][NotifWarStatus] {
+			if app.config.Checks[CheckNotifs][NotifWarStatus] {
 				msg = "Became war eligible"
 			}
 		case "StructureAnchoring":
-			if app.Config.Checks[CheckNotifs][NotifAnchoring] {
+			if app.config.Checks[CheckNotifs][NotifAnchoring] {
 				msg = "Has a structure anchoring"
 			}
 		case "StructureOnline":
-			if app.Config.Checks[CheckNotifs][NotifOnlining] {
+			if app.config.Checks[CheckNotifs][NotifOnlining] {
 				msg = "Has onlined a structure"
 			}
 		}
@@ -443,7 +443,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	// Get member list from ESI - datasource changes based on what corp you're querying, use the CEO's charID.
 	ceoStringID := optional.NewString(results.Ceo.Name)
 	corpMembersOpts := &esi.GetCorporationsCorporationIdMembersOpts{Datasource: ceoStringID}
-	esiCorpMembers, response, err := app.ProxyESI.ESI.CorporationApi.GetCorporationsCorporationIdMembers(app.ProxyAuthContext, corpID, corpMembersOpts)
+	esiCorpMembers, response, err := app.proxyEsi.ESI.CorporationApi.GetCorporationsCorporationIdMembers(app.proxyAuthContext, corpID, corpMembersOpts)
 	if err != nil {
 		logline := "Proxy: Error getting characters for corp from esi."
 		if response == nil {
@@ -467,7 +467,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	log.Printf("ESI Corp Members retrieved after %f corpID=%d", time.Since(startTime).Seconds(), corpID)
 
 	// Get member list from Neucore
-	neuCorpMembers, _, err := app.Neu.ApplicationCharactersApi.CharacterListV1(app.NeucoreContext).RequestBody(esiCorpMembers).Execute()
+	neuCorpMembers, _, err := app.neu.ApplicationCharactersApi.CharacterListV1(app.neucoreContext).RequestBody(esiCorpMembers).Execute()
 	if err != nil {
 		log.Printf("Neu: Error getting characters for corp from neucore. corpID=%d error=\"%s\"", corpID, corpData.Name)
 		results.Errors = append(results.Errors, fmt.Sprintf("Error getting characters from Neucore. error=\"%s\"", err.Error()))
@@ -481,7 +481,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	var missingMembers []int32
 	var invalidMembers []int32
 	for _, charID := range esiCorpMembers {
-		if app.Config.Checks[CheckChars][CharsExist] &&
+		if app.config.Checks[CheckChars][CharsExist] &&
 			!slices.ContainsFunc[neucoreapi.Character](neuCorpMembers, func(c neucoreapi.Character) bool {
 				return c.GetId() == int64(charID)
 			}) {
@@ -492,7 +492,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 			}
 			missingMembers = append(missingMembers, charID)
 		} else {
-			if app.Config.Checks[CheckChars][CharsValid] &&
+			if app.config.Checks[CheckChars][CharsValid] &&
 				!slices.ContainsFunc[neucoreapi.Character](neuCorpMembers, func(c neucoreapi.Character) bool {
 					return c.GetId() == int64(charID)
 				}) {
@@ -522,8 +522,8 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	// Check for characters in Neucore, but lacking 'member' group (no chars in brave proper, or gone inactive)
 	var charsMissingGroup []int32
 	var namesMissingGroup []string
-	if app.Config.Checks[CheckChars][CharsMember] {
-		characterGroups, _, err := app.Neu.ApplicationGroupsApi.GroupsBulkV1(app.NeucoreContext).RequestBody(esiCorpMembers).Execute()
+	if app.config.Checks[CheckChars][CharsMember] {
+		characterGroups, _, err := app.neu.ApplicationGroupsApi.GroupsBulkV1(app.neucoreContext).RequestBody(esiCorpMembers).Execute()
 		if err != nil {
 			log.Printf("Neu: Error retreiving bulk character groups error=\"%s\"", err.Error())
 		}
@@ -541,7 +541,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 				return g.GetName() == "member"
 			}) {
 				// check for invalid token on other characters.
-				playerChars, _, err := app.Neu.ApplicationCharactersApi.CharactersV1(app.NeucoreContext, charID).Execute()
+				playerChars, _, err := app.neu.ApplicationCharactersApi.CharactersV1(app.neucoreContext, charID).Execute()
 				if err != nil {
 					c := char.GetCharacter()
 					message := fmt.Sprintf("Error retrieving alts. character=%d error=\"%s\"", c.GetId(), err.Error())
@@ -575,7 +575,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 		chunkSize := min(defaultChunkSize, numMembersMissingGroup)
 		chars := charsMissingGroup[:chunkSize]
 		for i := range chars {
-			missingGroupMemberStrings = append(missingGroupMemberStrings, fmt.Sprintf("<%s://%s/#UserAdmin/%d|%s>", app.Config.NeucoreHTTPScheme, app.Config.NeucoreDomain, charsMissingGroup[i], namesMissingGroup[i]))
+			missingGroupMemberStrings = append(missingGroupMemberStrings, fmt.Sprintf("<%s://%s/#UserAdmin/%d|%s>", app.config.NeucoreHTTPScheme, app.config.NeucoreDomain, charsMissingGroup[i], namesMissingGroup[i]))
 		}
 
 		if numMembersMissingGroup > chunkSize {
@@ -629,7 +629,7 @@ func (app *app) esiHealthCheck() ([]string, error) {
 	defer app.perfTime("esiHealthCheck", nil)
 	generalErrors := []string{}
 	var err error
-	status, _, err := app.ESI.Meta.MetaApi.GetStatus(context.TODO(), nil)
+	status, _, err := app.esi.Meta.MetaApi.GetStatus(context.TODO(), nil)
 	if err != nil {
 		log.Printf("Error getting ESI Status error=\"%s\"", err.Error())
 		generalErrors = append(generalErrors, "Error getting ESI Status")
@@ -666,7 +666,7 @@ func (app *app) chunkNameRequest(naughtyIDs []int32, missingMembers []int32, inv
 	naughtyCount := len(naughtyIDs)
 	for i := 0; i < len(naughtyIDs); i += NAME_POST_LIMIT {
 		batchIDs := naughtyIDs[i:min(i+NAME_POST_LIMIT, naughtyCount)]
-		naughtyNames, response, err := app.ESI.ESI.UniverseApi.PostUniverseNames(context.TODO(), batchIDs, nil)
+		naughtyNames, response, err := app.esi.ESI.UniverseApi.PostUniverseNames(context.TODO(), batchIDs, nil)
 		if err != nil {
 			return nil, nil, fmt.Errorf("error retreving bulk character names request=\"%v\" error=\"%s\"", naughtyIDs, err.Error())
 		}

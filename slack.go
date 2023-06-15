@@ -61,7 +61,7 @@ func (app *app) generateAndSendWebhook(startTime time.Time, generalErrors []stri
 		log.Printf("posting webhook batchLen=%d totalSentBlocks=%d queuedBlocks=%d range=%d:%d payload=%s", batchLen, totalSentBlocks, queuedBlocks, totalSentBlocks, upper, string(j))
 		// send rate is 1 message per second "burstable"
 		time.Sleep(1 * time.Second)
-		if err := slack.PostWebhook(app.Config.SlackWebhookURL, msg); err != nil {
+		if err := slack.PostWebhook(app.config.SlackWebhookURL, msg); err != nil {
 			raw, _ := json.Marshal(&msg)
 			log.Printf("Slack POST Webhook error=\"%s\" request=\"%s\"", err.Error(), string(raw))
 		}
