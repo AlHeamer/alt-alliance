@@ -23,25 +23,7 @@ import (
 	"golang.org/x/oauth2"
 )
 
-type config struct {
-	NeucoreAppID            uint                       `yaml:"NeucoreAppID"`
-	Threads                 int                        `yaml:"Threads" default:"20"`
-	CorpBaseTaxRate         float32                    `yaml:"CorpBaseTaxRate"`
-	RequestTimeoutInSeconds uint                       `yaml:"RequestTimeoutInSeconds" default:"120"`
-	NeucoreHTTPScheme       string                     `yaml:"NeucoreHTTPScheme" default:"http"`
-	NeucoreDomain           string                     `yaml:"NeucoreDomain"`
-	NeucoreAppSecret        string                     `yaml:"NeucoreAppSecret"`
-	NeucoreUserAgent        string                     `yaml:"NeucoreUserAgent"`
-	NeucoreAPIBase          string                     `yaml:"-"`
-	EsiUserAgent            string                     `yaml:"EsiUserAgent"`
-	SlackWebhookURL         string                     `yaml:"SlackWebhookURL"`
-	CheckAlliances          []int32                    `yaml:"CheckAlliances"`
-	CheckCorps              []int32                    `yaml:"CheckCorps"`
-	IgnoreCorps             []int32                    `yaml:"IgnoreCorps"`
-	IgnoreChars             []int32                    `yaml:"IgnoreChars"`
-	Checks                  map[string]map[string]bool `yaml:"Checks"`
-}
-
+const dateTimeFormat = "2006-01-02 15:04"
 const (
 	// ceo notifictaions
 	CheckNotifs    = "Notifications"
@@ -59,11 +41,32 @@ const (
 	CharsMember = "MemberStatus"
 )
 
+var requiredRoles = [...]neucoreapi.Role{neucoreapi.APP, neucoreapi.APP_CHARS, neucoreapi.APP_ESI, neucoreapi.APP_GROUPS}
+
 func min[T ~int](a, b T) T {
 	if a <= b {
 		return a
 	}
 	return b
+}
+
+type config struct {
+	NeucoreAppID            uint                       `yaml:"NeucoreAppID"`
+	Threads                 int                        `yaml:"Threads" default:"20"`
+	CorpBaseTaxRate         float32                    `yaml:"CorpBaseTaxRate"`
+	RequestTimeoutInSeconds uint                       `yaml:"RequestTimeoutInSeconds" default:"120"`
+	NeucoreHTTPScheme       string                     `yaml:"NeucoreHTTPScheme" default:"http"`
+	NeucoreDomain           string                     `yaml:"NeucoreDomain"`
+	NeucoreAppSecret        string                     `yaml:"NeucoreAppSecret"`
+	NeucoreUserAgent        string                     `yaml:"NeucoreUserAgent"`
+	NeucoreAPIBase          string                     `yaml:"-"`
+	EsiUserAgent            string                     `yaml:"EsiUserAgent"`
+	SlackWebhookURL         string                     `yaml:"SlackWebhookURL"`
+	CheckAlliances          []int32                    `yaml:"CheckAlliances"`
+	CheckCorps              []int32                    `yaml:"CheckCorps"`
+	IgnoreCorps             []int32                    `yaml:"IgnoreCorps"`
+	IgnoreChars             []int32                    `yaml:"IgnoreChars"`
+	Checks                  map[string]map[string]bool `yaml:"Checks"`
 }
 
 type app struct {
@@ -89,9 +92,13 @@ type corpVerificationResult struct {
 	Status      []string
 }
 
-var requiredRoles = [...]neucoreapi.Role{neucoreapi.APP, neucoreapi.APP_CHARS, neucoreapi.APP_ESI, neucoreapi.APP_GROUPS}
-
-const dateTimeFormat = "2006-01-02 15:04"
+func (app *app) perfTime(msg string, t *time.Time) {
+	if t == nil {
+		tt := time.Now()
+		t = &tt
+	}
+	app.logger.Info(msg, slog.Duration("duration", time.Since(*t)))
+}
 
 func (app *app) initApp() error {
 	defer app.perfTime("initApp", nil)
@@ -122,15 +129,14 @@ func (app *app) initApp() error {
 	app.proxyEsi = goesi.NewAPIClient(httpc, app.config.NeucoreUserAgent)
 	app.proxyEsi.ChangeBasePath(app.config.NeucoreAPIBase + "/app/v2/esi")
 	proxyAuth := goesi.NewSSOAuthenticatorV2(httpc, "", "", "", []string{})
-	proxyToken := &oauth2.Token{
+	neucoreTokenSource := proxyAuth.TokenSource(&oauth2.Token{
 		AccessToken: base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%d:%s", app.config.NeucoreAppID, app.config.NeucoreAppSecret))),
 		TokenType:   "bearer",
-	}
-	neucoreTokenSource := proxyAuth.TokenSource(proxyToken)
+	})
 	app.proxyAuthContext = context.WithValue(context.Background(), goesi.ContextOAuth2, neucoreTokenSource)
 
 	// Init Neucore API
-	neucoreConfig := &neucoreapi.Configuration{
+	app.neu = neucoreapi.NewAPIClient(&neucoreapi.Configuration{
 		HTTPClient: httpc,
 		UserAgent:  app.config.NeucoreUserAgent,
 		Servers: neucoreapi.ServerConfigurations{{
@@ -138,24 +144,14 @@ func (app *app) initApp() error {
 			Description: "Neucore API Base",
 		}},
 		OperationServers: map[string]neucoreapi.ServerConfigurations{},
-	}
-
-	app.neu = neucoreapi.NewAPIClient(neucoreConfig)
+	})
 	app.neucoreContext = context.WithValue(context.Background(), neucoreapi.ContextOAuth2, neucoreTokenSource)
 	return nil
 }
 
-func (app *app) perfTime(msg string, t *time.Time) {
-	if t == nil {
-		tt := time.Now()
-		t = &tt
-	}
-	app.logger.Info(msg, slog.Duration("duration", time.Since(*t)))
-}
-
 func main() {
 	opts := &slog.HandlerOptions{
-		//Level: slog.LevelWarn,
+		Level: slog.LevelInfo,
 	}
 	app := app{
 		startTime: time.Now(),
@@ -262,7 +258,6 @@ func main() {
 	// check each corp in the alliance
 	queueLength := len(allCorps)
 	queue = make(chan int32, queueLength)
-	var totalOwed float64
 	for i := 0; i < app.config.Threads; i++ {
 		wg.Add(1)
 		go func() {
@@ -300,9 +295,6 @@ func main() {
 	}
 	close(queue)
 	wg.Wait()
-	if totalOwed > 2000000000 {
-		generalErrors = append(generalErrors, fmt.Sprintf("Total corp taxes owed=%.f", totalOwed))
-	}
 	log.Printf("Corp Check Complete: %f", time.Since(app.startTime).Seconds())
 
 	app.generateAndSendWebhook(app.startTime, generalErrors, &blocks)
@@ -629,7 +621,7 @@ func (app *app) esiHealthCheck() ([]string, error) {
 	defer app.perfTime("esiHealthCheck", nil)
 	generalErrors := []string{}
 	var err error
-	status, _, err := app.esi.Meta.MetaApi.GetStatus(context.TODO(), nil)
+	status, _, err := app.esi.Meta.MetaApi.GetStatus(context.Background(), nil)
 	if err != nil {
 		log.Printf("Error getting ESI Status error=\"%s\"", err.Error())
 		generalErrors = append(generalErrors, "Error getting ESI Status")
