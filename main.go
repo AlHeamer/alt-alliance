@@ -202,7 +202,7 @@ func main() {
 	var blocks []slack.Block
 	generalErrors, err := app.esiHealthCheck()
 	if err != nil {
-		app.generateAndSendWebhook(app.startTime, generalErrors, &blocks)
+		app.generateAndSendWebhook(generalErrors, blocks)
 		return
 	}
 
@@ -212,7 +212,7 @@ func main() {
 		neucoreError := fmt.Sprintf("Error checking neucore app info. error=\"%s\"", err.Error())
 		log.Print(neucoreError)
 		generalErrors = append(generalErrors, neucoreError)
-		app.generateAndSendWebhook(app.startTime, generalErrors, &blocks)
+		app.generateAndSendWebhook(generalErrors, blocks)
 		return
 	}
 
@@ -228,7 +228,7 @@ func main() {
 			msg := fmt.Sprintf("Neucore Config Error - Missing Roles:\nGiven: %v\nReq'd: %v", neucoreAppData.Roles, requiredRoles)
 			log.Print(msg)
 			generalErrors = append(generalErrors, msg)
-			app.generateAndSendWebhook(app.startTime, generalErrors, &blocks)
+			app.generateAndSendWebhook(generalErrors, blocks)
 			return
 		}
 	}
@@ -329,12 +329,12 @@ func main() {
 	wg.Wait()
 	log.Printf("Corp Check Complete: %f", time.Since(app.startTime).Seconds())
 
-	app.generateAndSendWebhook(app.startTime, generalErrors, &blocks)
+	app.generateAndSendWebhook(generalErrors, blocks)
 }
 
-func (app *app) verifyCorporation(corpID int32, charIgnoreList []int32, startTime time.Time) corpVerificationResult {
+func (app *app) verifyCorporation(corpID int32, charIgnoreList []int32, startTime time.Time) *corpVerificationResult {
 	now := time.Now()
-	results := corpVerificationResult{
+	results := &corpVerificationResult{
 		CorpID:   corpID,
 		CorpName: fmt.Sprintf("Corp %d", corpID),
 		Ceo:      &neucoreapi.Character{Name: "CEO"},
@@ -383,7 +383,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList []int32, startTim
 	/// Check CEO's notifications (cached 10 minutes)
 	///
 	if len(app.config.Checks[CheckCorps]) > 0 {
-		app.checkCeoNotifications(corpID, &corpData, &results, now, startTime)
+		app.checkCeoNotifications(corpID, &corpData, results, now, startTime)
 	}
 
 	///
@@ -396,7 +396,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList []int32, startTim
 		results.Errors = append(results.Errors, "Corporation is War Eligible.")
 	}
 	if len(app.config.Checks[CheckChars]) > 0 {
-		app.discoverNaughtyMembers(corpID, &corpData, &results, charIgnoreList, startTime)
+		app.discoverNaughtyMembers(corpID, &corpData, results, charIgnoreList, startTime)
 	}
 
 	return results
@@ -651,7 +651,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 
 func (app *app) esiHealthCheck() ([]string, error) {
 	defer app.perfTime("esiHealthCheck", nil)
-	generalErrors := []string{}
+	var generalErrors []string
 	var err error
 	status, _, err := app.esi.Meta.MetaApi.GetStatus(context.Background(), nil)
 	if err != nil {

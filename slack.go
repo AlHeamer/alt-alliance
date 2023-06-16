@@ -31,25 +31,26 @@ func getBlocksUpperBugged(blocks []slack.Block, lower int, upper int) int {
 	return newUpper
 }
 
-func generateStatusFooterBlock(startTime time.Time, generalErrors []string, blocks *[]slack.Block) {
+func generateStatusFooterBlock(startTime time.Time, generalErrors []string, blocks []slack.Block) []slack.Block {
 	generalErrors = append(generalErrors, fmt.Sprintf("Completed execution in %f", time.Since(startTime).Seconds()))
 	execFooter := slack.NewTextBlockObject("mrkdwn", strings.Join(generalErrors, "\n"), false, false)
-	*blocks = append(*blocks, slack.NewDividerBlock())
-	*blocks = append(*blocks, slack.NewContextBlock("", execFooter))
+	blocks = append(blocks,
+		slack.NewDividerBlock(),
+		slack.NewContextBlock("", execFooter))
+	return blocks
 }
 
-func (app *app) generateAndSendWebhook(startTime time.Time, generalErrors []string, blocks *[]slack.Block) {
-	generateStatusFooterBlock(startTime, generalErrors, blocks)
+func (app *app) generateAndSendWebhook(generalErrors []string, blocks []slack.Block) {
+	blocks = generateStatusFooterBlock(app.startTime, generalErrors, blocks)
 
 	// slack has a 50 block limit per message, and 1 message per second limit ("burstable.")
 	const blocksPerMessage = 50
-	blockArray := *blocks
-	queuedBlocks := len(blockArray)
+	queuedBlocks := len(blocks)
 	var batchLen int
 	for totalSentBlocks := 0; totalSentBlocks < queuedBlocks; totalSentBlocks += batchLen {
 		upper := min(totalSentBlocks+blocksPerMessage, queuedBlocks)
-		upper = getBlocksUpperBugged(blockArray, totalSentBlocks, upper)
-		batch := blockArray[totalSentBlocks:upper]
+		upper = getBlocksUpperBugged(blocks, totalSentBlocks, upper)
+		batch := blocks[totalSentBlocks:upper]
 		batchLen = len(batch)
 
 		m := slack.Blocks{BlockSet: batch}
@@ -68,7 +69,7 @@ func (app *app) generateAndSendWebhook(startTime time.Time, generalErrors []stri
 	}
 }
 
-func createCorpBlocks(results corpVerificationResult) []slack.Block {
+func createCorpBlocks(results *corpVerificationResult) []slack.Block {
 	// iterate errors map
 	var sb strings.Builder
 	fmt.Fprintf(
