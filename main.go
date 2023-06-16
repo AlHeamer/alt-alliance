@@ -106,8 +106,19 @@ func (app *app) initApp() error {
 	// read command line flags to get config file, then parse into app.config
 	var configFile string
 	flag.StringVar(&configFile, "f", "./config.yaml", "Config file to use")
+	var notifWarEligible, notifStructure bool
+	flag.BoolVar(&notifWarEligible, "notif-war", false, "Check for changes in war eligibility status")
+	flag.BoolVar(&notifStructure, "notif-structure", false, "Check for anchoring or onlining structures")
+	var corpTaxRate, corpWarEligible bool
+	flag.BoolVar(&corpWarEligible, "corp-tax", false, "Check that corp tax rates matches minimum")
+	flag.BoolVar(&corpTaxRate, "corp-war", false, "Check that corps are not war eligible")
+	var charExists, charValid, charMemberRole bool
+	flag.BoolVar(&charExists, "char-exists", false, "Check that the character exists in neucore")
+	flag.BoolVar(&charValid, "char-valid", false, "Check that all alts in neucore have a valid esi token")
+	flag.BoolVar(&charMemberRole, "char-member-role", false, "Check at least one character has the 'member' neucore role")
 	flag.Parse()
 
+	// Read in config file into app.config
 	var data []byte
 	var err error
 	if data, err = os.ReadFile(configFile); err != nil {
@@ -119,6 +130,27 @@ func (app *app) initApp() error {
 		return err
 	}
 	app.config.NeucoreAPIBase = fmt.Sprintf("%s://%s/api", app.config.NeucoreHTTPScheme, app.config.NeucoreDomain)
+
+	// overwrite check flags with command line settings (if set)
+	flag.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "notif-war":
+			app.config.Checks[CheckNotifs][NotifWarStatus] = notifWarEligible
+		case "notif-structure":
+			app.config.Checks[CheckNotifs][NotifAnchoring] = notifStructure
+			app.config.Checks[CheckNotifs][NotifOnlining] = notifStructure
+		case "corp-tax":
+			app.config.Checks[CheckCorps][CorpTaxRate] = corpTaxRate
+		case "corp-war":
+			app.config.Checks[CheckCorps][CorpWarEligible] = corpWarEligible
+		case "char-exists":
+			app.config.Checks[CheckChars][CharsExist] = charExists
+		case "char-valid":
+			app.config.Checks[CheckChars][CharsValid] = charValid
+		case "char-member-role":
+			app.config.Checks[CheckChars][CharsMember] = charMemberRole
+		}
+	})
 	app.logger.Info("will perform the following", slog.Any("checks", app.config.Checks))
 
 	// Init ESI
