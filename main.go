@@ -67,6 +67,7 @@ type config struct {
 	IgnoreCorps             []int32                    `yaml:"IgnoreCorps"`
 	IgnoreChars             []int32                    `yaml:"IgnoreChars"`
 	Checks                  map[string]map[string]bool `yaml:"Checks"`
+	Quiet                   bool                       `yaml:"-"`
 }
 
 type app struct {
@@ -101,21 +102,27 @@ func (app *app) perfTime(msg string, t *time.Time) {
 }
 
 func (app *app) initApp() error {
-	defer app.perfTime("initApp", nil)
+	defer app.perfTime("init complete", &app.startTime)
 
 	// read command line flags to get config file, then parse into app.config
 	var configFile string
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage of %s:\n  unset checks using -flag=f\n\n", os.Args[0])
+		flag.PrintDefaults()
+	}
 	flag.StringVar(&configFile, "f", "./config.yaml", "Config file to use")
 	var notifWarEligible, notifStructure bool
-	flag.BoolVar(&notifWarEligible, "notif-war", false, "Check for changes in war eligibility status")
-	flag.BoolVar(&notifStructure, "notif-structure", false, "Check for anchoring or onlining structures")
+	flag.BoolVar(&notifWarEligible, "notif-war", false, "Check CEO notifications for changes in war eligibility status")
+	flag.BoolVar(&notifStructure, "notif-structure", false, "Check CEO notifications for anchoring or onlining structures")
 	var corpTaxRate, corpWarEligible bool
-	flag.BoolVar(&corpWarEligible, "corp-tax", false, "Check that corp tax rates matches minimum")
+	flag.BoolVar(&corpWarEligible, "corp-tax", false, "Check that corp tax rate matches that set in config")
 	flag.BoolVar(&corpTaxRate, "corp-war", false, "Check that corps are not war eligible")
 	var charExists, charValid, charMemberRole bool
 	flag.BoolVar(&charExists, "char-exists", false, "Check that the character exists in neucore")
 	flag.BoolVar(&charValid, "char-valid", false, "Check that all alts in neucore have a valid esi token")
 	flag.BoolVar(&charMemberRole, "char-member-role", false, "Check at least one character has the 'member' neucore role")
+	var quiet bool
+	flag.BoolVar(&quiet, "q", false, "Don't print the execution time footer to slack if there are no issues")
 	flag.Parse()
 
 	// Read in config file into app.config
@@ -130,6 +137,7 @@ func (app *app) initApp() error {
 		return err
 	}
 	app.config.NeucoreAPIBase = fmt.Sprintf("%s://%s/api", app.config.NeucoreHTTPScheme, app.config.NeucoreDomain)
+	app.config.Quiet = quiet
 
 	// overwrite check flags with command line settings (if set)
 	flag.Visit(func(f *flag.Flag) {
@@ -191,7 +199,6 @@ func main() {
 	}
 	defer app.perfTime("completed execution", &app.startTime)
 	slog.SetDefault(app.logger)
-	app.logger.Info("starting process...")
 
 	// load config
 	if err := app.initApp(); err != nil {
@@ -210,7 +217,7 @@ func main() {
 	neucoreAppData, _, err := app.neu.ApplicationApi.ShowV1(app.neucoreContext).Execute()
 	if err != nil {
 		neucoreError := fmt.Sprintf("Error checking neucore app info. error=\"%s\"", err.Error())
-		log.Print(neucoreError)
+		app.logger.Error("error checking neucore app info", slog.Any("error", err))
 		generalErrors = append(generalErrors, neucoreError)
 		app.generateAndSendWebhook(generalErrors, blocks)
 		return

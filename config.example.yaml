@@ -1,6 +1,6 @@
 # AppID created in neucore
 NeucoreAppID: 1
-# Number of corporations to check in paralell
+# Number of corporations to check in parallel
 Threads: 20
 # Add corp error if tax rate is not >=
 # 100% = 1.0, 75% = 0.75, etc.

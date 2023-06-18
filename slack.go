@@ -31,8 +31,11 @@ func getBlocksUpperBugged(blocks []slack.Block, lower int, upper int) int {
 	return newUpper
 }
 
-func generateStatusFooterBlock(startTime time.Time, generalErrors []string, blocks []slack.Block) []slack.Block {
-	generalErrors = append(generalErrors, fmt.Sprintf("Completed execution in %f", time.Since(startTime).Seconds()))
+func (app *app) generateStatusFooterBlock(generalErrors []string, blocks []slack.Block) []slack.Block {
+	if app.config.Quiet && len(generalErrors) == 0 {
+		return blocks
+	}
+	generalErrors = append(generalErrors, fmt.Sprintf("Completed execution in %v", time.Since(app.startTime)))
 	execFooter := slack.NewTextBlockObject("mrkdwn", strings.Join(generalErrors, "\n"), false, false)
 	blocks = append(blocks,
 		slack.NewDividerBlock(),
@@ -41,7 +44,7 @@ func generateStatusFooterBlock(startTime time.Time, generalErrors []string, bloc
 }
 
 func (app *app) generateAndSendWebhook(generalErrors []string, blocks []slack.Block) {
-	blocks = generateStatusFooterBlock(app.startTime, generalErrors, blocks)
+	blocks = app.generateStatusFooterBlock(generalErrors, blocks)
 
 	// slack has a 50 block limit per message, and 1 message per second limit ("burstable.")
 	const blocksPerMessage = 50
@@ -59,7 +62,7 @@ func (app *app) generateAndSendWebhook(generalErrors []string, blocks []slack.Bl
 		}
 
 		j, _ := json.Marshal(msg)
-		log.Printf("posting webhook batchLen=%d totalSentBlocks=%d queuedBlocks=%d range=%d:%d payload=%s", batchLen, totalSentBlocks, queuedBlocks, totalSentBlocks, upper, string(j))
+		log.Printf(`posting webhook batchLen=%d totalSentBlocks=%d queuedBlocks=%d range="%d:%d" payload="%s"`, batchLen, totalSentBlocks, queuedBlocks, totalSentBlocks, upper, string(j))
 		// send rate is 1 message per second "burstable"
 		time.Sleep(1 * time.Second)
 		if err := slack.PostWebhook(app.config.SlackWebhookURL, msg); err != nil {
