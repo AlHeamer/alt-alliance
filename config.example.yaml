@@ -20,14 +20,11 @@ CheckCorps:
 IgnoreCorps: [ 109299958, 216121397 ] # CCP, Game Masters
 IgnoreChars:
 Checks:
-  Notifications: # Check the following CEO notifications
-    StructureAnchoring: true
-    StructureOnlining: true
-    WarStatus: true
-  Corporation:          # Check corporation info
-    TaxRate: true       # Uses CorpBaseTaxRate above
-    WarEligible: true   # Error if the corp is war eligible
-  Characters:
-    Exists: true        # check character exists in neucore
-    ValidToken: true    # check neucore account tokens are valid
-    MemberStatus: true  # check neucore account has 'member' status
+  CharacterExists: true         # check character exists in neucore
+  CharacterMemberStatus: true   # check neucore account has 'member' status
+  CharacterValidToken: true     # check neucore account tokens are valid
+  CorpTaxRate: true             # Uses CorpBaseTaxRate above
+  CorpWarEligible: true         # Error if the corp is war eligible
+  NotifStructureAnchoring: true # check ceo notifications for anchoring structures
+  NotifStructureOnlining: true  # check ceo notifications for onlingin structures
+  NotifWarStatus: true          # check ceo notifications for war status changes

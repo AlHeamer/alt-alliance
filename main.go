@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"flag"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -23,22 +22,22 @@ import (
 	"golang.org/x/oauth2"
 )
 
-const dateTimeFormat = "2006-01-02 15:04"
 const (
+	DateTimeFormat = "2006-01-02 15:04"
+	MaxRetryCount  = 5
+)
+const (
+	// char data
+	CheckCharsExist  = "CharacterExists"
+	CheckCharsMember = "CharacterMemberStatus"
+	CheckCharsValid  = "CharacterValidToken"
+	// corp data
+	CheckCorpTaxRate     = "CorpTaxRate"
+	CheckCorpWarEligible = "CorpWarEligible"
 	// ceo notifictaions
-	CheckNotifs    = "Notifications"
-	NotifAnchoring = "StructureAnchoring"
-	NotifOnlining  = "StructureOnlining"
-	NotifWarStatus = "WarStatus"
-
-	CheckCorps      = "Corporation"
-	CorpTaxRate     = "TaxRate"
-	CorpWarEligible = "WarEligible"
-
-	CheckChars  = "Characters"
-	CharsExist  = "Exists"
-	CharsValid  = "ValidToken"
-	CharsMember = "MemberStatus"
+	CheckNotifAnchoring = "NotifStructureAnchoring"
+	CheckNotifOnlining  = "NotifStructureOnlining"
+	CheckNotifWarStatus = "NotifWarStatus"
 )
 
 var requiredRoles = [...]neucoreapi.Role{neucoreapi.APP, neucoreapi.APP_CHARS, neucoreapi.APP_ESI, neucoreapi.APP_GROUPS}
@@ -51,23 +50,23 @@ func min[T ~int](a, b T) T {
 }
 
 type config struct {
-	NeucoreAppID            uint                       `yaml:"NeucoreAppID"`
-	Threads                 int                        `yaml:"Threads" default:"20"`
-	CorpBaseTaxRate         float32                    `yaml:"CorpBaseTaxRate"`
-	RequestTimeoutInSeconds uint                       `yaml:"RequestTimeoutInSeconds" default:"120"`
-	NeucoreHTTPScheme       string                     `yaml:"NeucoreHTTPScheme" default:"http"`
-	NeucoreDomain           string                     `yaml:"NeucoreDomain"`
-	NeucoreAppSecret        string                     `yaml:"NeucoreAppSecret"`
-	NeucoreUserAgent        string                     `yaml:"NeucoreUserAgent"`
-	NeucoreAPIBase          string                     `yaml:"-"`
-	EsiUserAgent            string                     `yaml:"EsiUserAgent"`
-	SlackWebhookURL         string                     `yaml:"SlackWebhookURL"`
-	CheckAlliances          []int32                    `yaml:"CheckAlliances"`
-	CheckCorps              []int32                    `yaml:"CheckCorps"`
-	IgnoreCorps             []int32                    `yaml:"IgnoreCorps"`
-	IgnoreChars             []int32                    `yaml:"IgnoreChars"`
-	Checks                  map[string]map[string]bool `yaml:"Checks"`
-	Quiet                   bool                       `yaml:"-"`
+	NeucoreAppID            uint            `yaml:"NeucoreAppID"`
+	Threads                 int             `yaml:"Threads" default:"20"`
+	CorpBaseTaxRate         float32         `yaml:"CorpBaseTaxRate"`
+	RequestTimeoutInSeconds uint            `yaml:"RequestTimeoutInSeconds" default:"120"`
+	NeucoreHTTPScheme       string          `yaml:"NeucoreHTTPScheme" default:"http"`
+	NeucoreDomain           string          `yaml:"NeucoreDomain"`
+	NeucoreAppSecret        string          `yaml:"NeucoreAppSecret"`
+	NeucoreUserAgent        string          `yaml:"NeucoreUserAgent"`
+	NeucoreAPIBase          string          `yaml:"-"`
+	EsiUserAgent            string          `yaml:"EsiUserAgent"`
+	SlackWebhookURL         string          `yaml:"SlackWebhookURL"`
+	CheckAlliances          []int32         `yaml:"CheckAlliances"`
+	CheckCorps              []int32         `yaml:"CheckCorps"`
+	IgnoreCorps             []int32         `yaml:"IgnoreCorps"`
+	IgnoreChars             []int32         `yaml:"IgnoreChars"`
+	Checks                  map[string]bool `yaml:"Checks"`
+	Quiet                   bool            `yaml:"-"`
 }
 
 type app struct {
@@ -93,16 +92,21 @@ type corpVerificationResult struct {
 	Status      []string
 }
 
-func (app *app) perfTime(msg string, t *time.Time) {
+func (app *app) perfTime(msg string, t *time.Time, args ...any) {
 	if t == nil {
 		tt := time.Now()
 		t = &tt
 	}
-	app.logger.Info(msg, slog.Duration("duration", time.Since(*t)))
+	app.logger.Info(msg, slog.Duration("duration", time.Since(*t)), args)
 }
 
 func (app *app) initApp() error {
 	defer app.perfTime("init complete", &app.startTime)
+	opts := &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}
+	app.logger = slog.New(slog.NewTextHandler(os.Stdout, opts))
+	slog.SetDefault(app.logger)
 
 	// read command line flags to get config file, then parse into app.config
 	var configFile string
@@ -143,20 +147,20 @@ func (app *app) initApp() error {
 	flag.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "notif-war":
-			app.config.Checks[CheckNotifs][NotifWarStatus] = notifWarEligible
+			app.config.Checks[CheckNotifWarStatus] = notifWarEligible
 		case "notif-structure":
-			app.config.Checks[CheckNotifs][NotifAnchoring] = notifStructure
-			app.config.Checks[CheckNotifs][NotifOnlining] = notifStructure
+			app.config.Checks[CheckNotifAnchoring] = notifStructure
+			app.config.Checks[CheckNotifOnlining] = notifStructure
 		case "corp-tax":
-			app.config.Checks[CheckCorps][CorpTaxRate] = corpTaxRate
+			app.config.Checks[CheckCorpTaxRate] = corpTaxRate
 		case "corp-war":
-			app.config.Checks[CheckCorps][CorpWarEligible] = corpWarEligible
+			app.config.Checks[CheckCorpWarEligible] = corpWarEligible
 		case "char-exists":
-			app.config.Checks[CheckChars][CharsExist] = charExists
+			app.config.Checks[CheckCharsExist] = charExists
 		case "char-valid":
-			app.config.Checks[CheckChars][CharsValid] = charValid
+			app.config.Checks[CheckCharsValid] = charValid
 		case "char-member-role":
-			app.config.Checks[CheckChars][CharsMember] = charMemberRole
+			app.config.Checks[CheckCharsMember] = charMemberRole
 		}
 	})
 	app.logger.Info("will perform the following", slog.Any("checks", app.config.Checks))
@@ -190,56 +194,36 @@ func (app *app) initApp() error {
 }
 
 func main() {
-	opts := &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	}
 	app := app{
 		startTime: time.Now(),
-		logger:    slog.New(slog.NewTextHandler(os.Stdout, opts)),
 	}
 	defer app.perfTime("completed execution", &app.startTime)
-	slog.SetDefault(app.logger)
 
 	// load config
 	if err := app.initApp(); err != nil {
-		os.Exit(1)
+		return
 	}
 
 	// Perform ESI Health check.
 	var blocks []slack.Block
-	generalErrors, err := app.esiHealthCheck()
+	var generalErrors []string
+	var healthErrs []string
+	var err error
+	healthErrs, err = app.esiHealthCheck()
+	generalErrors = append(generalErrors, healthErrs...)
 	if err != nil {
 		app.generateAndSendWebhook(generalErrors, blocks)
 		return
 	}
 
 	// Neucore Roles Check
-	neucoreAppData, _, err := app.neu.ApplicationApi.ShowV1(app.neucoreContext).Execute()
+	var rolesErrs []string
+	rolesErrs, err = app.neucoreRolesCheck()
+	generalErrors = append(generalErrors, rolesErrs...)
 	if err != nil {
-		neucoreError := fmt.Sprintf("Error checking neucore app info. error=\"%s\"", err.Error())
-		app.logger.Error("error checking neucore app info", slog.Any("error", err))
-		generalErrors = append(generalErrors, neucoreError)
 		app.generateAndSendWebhook(generalErrors, blocks)
 		return
 	}
-
-	for _, rr := range requiredRoles {
-		success := false
-		for _, role := range neucoreAppData.Roles {
-			if rr == role {
-				success = true
-			}
-		}
-		if !success {
-			// dump and die
-			msg := fmt.Sprintf("Neucore Config Error - Missing Roles:\nGiven: %v\nReq'd: %v", neucoreAppData.Roles, requiredRoles)
-			log.Print(msg)
-			generalErrors = append(generalErrors, msg)
-			app.generateAndSendWebhook(generalErrors, blocks)
-			return
-		}
-	}
-	log.Printf("API Check Complete: %f", time.Since(app.startTime).Seconds())
 
 	// Compile a list of all corps to check
 	var allCorps []int32
@@ -292,7 +276,6 @@ func main() {
 	}()
 
 	wg.Wait()
-	log.Printf("Alliance Check Complete: %f", time.Since(app.startTime).Seconds())
 
 	// check each corp in the alliance
 	queueLength := len(allCorps)
@@ -303,11 +286,11 @@ func main() {
 			defer wg.Done()
 			for corpID := range queue {
 				if slices.Contains(app.config.IgnoreCorps, corpID) {
-					log.Printf("Ignored Corporation id=%d", corpID)
+					app.logger.Info("ignored corporation", slog.Int("id", int(corpID)))
 					continue
 				}
 
-				corpResult := app.verifyCorporation(corpID, app.config.IgnoreChars, app.startTime)
+				corpResult := app.verifyCorporation(corpID, app.config.IgnoreChars)
 
 				if len(financeTokens) > 0 {
 					if tok, ok := financeTokens[corpID]; !ok || (ok && !tok) {
@@ -334,13 +317,13 @@ func main() {
 	}
 	close(queue)
 	wg.Wait()
-	log.Printf("Corp Check Complete: %f", time.Since(app.startTime).Seconds())
 
 	app.generateAndSendWebhook(generalErrors, blocks)
 }
 
-func (app *app) verifyCorporation(corpID int32, charIgnoreList []int32, startTime time.Time) *corpVerificationResult {
-	now := time.Now()
+func (app *app) verifyCorporation(corpID int32, charIgnoreList []int32) *corpVerificationResult {
+	defer app.perfTime("verify corporation completed", nil, slog.Int("corpID", int(corpID)))
+	l := app.logger.With(slog.Int("corpID", int(corpID)))
 	results := &corpVerificationResult{
 		CorpID:   corpID,
 		CorpName: fmt.Sprintf("Corp %d", corpID),
@@ -351,8 +334,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList []int32, startTim
 	// Get public corp data
 	corpData, _, err := app.esi.ESI.CorporationApi.GetCorporationsCorporationId(context.TODO(), corpID, nil)
 	if err != nil {
-		logline := fmt.Sprintf("ESI: Error getting public corp info. corpID=%d error=\"%s\"", corpID, err.Error())
-		log.Print(logline)
+		l.Error("Error getting public corp info", slog.Any("error", err))
 		results.Errors = append(results.Errors, "Error getting public corp info.")
 		return results
 	}
@@ -361,20 +343,22 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList []int32, startTim
 	ceoId := int64(corpData.CeoId)
 	results.Ceo.Id = *neucoreapi.NewNullableInt64(&ceoId)
 	results.Ceo.Name = fmt.Sprintf("%d", corpData.CeoId)
-	log.Printf("Corp Data retrieved after %f corpID=%d", time.Since(startTime).Seconds(), corpID)
 
 	// Get CEO info from neucore
 	neuMain, response, err := app.neu.ApplicationCharactersApi.MainV2(app.neucoreContext, corpData.CeoId).Execute()
 	if err != nil {
+		var status string
+		if response != nil {
+			status = response.Status
+		}
+		l.Error("Neu: error retreiving CEO's main", slog.Int64("ceoID", ceoId), slog.String("status", status), slog.Any("error", err))
 		logline := "Neu: Error retreiving CEO's main."
 		if response == nil {
 			logline = logline + fmt.Sprintf(" ceoID=%d corpID=%d httpResponse=nil error=\"%s\"", corpID, corpData.CeoId, err.Error())
 			results.Errors = append(results.Errors, logline)
-			log.Print(logline)
 			return results
 		}
 		logline = logline + fmt.Sprintf(" ceoID=%d corpID=%d status=\"%s\" error=\"%s\"", corpID, corpData.CeoId, response.Status, err.Error())
-		log.Print(logline)
 
 		switch response.StatusCode {
 		case http.StatusNotFound:
@@ -389,51 +373,52 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList []int32, startTim
 	///
 	/// Check CEO's notifications (cached 10 minutes)
 	///
-	if len(app.config.Checks[CheckCorps]) > 0 {
-		app.checkCeoNotifications(corpID, &corpData, results, now, startTime)
-	}
+	app.checkCeoNotifications(corpID, &corpData, results)
 
 	///
 	/// Check corp info and member lists (cached 1 hour)
 	///
-	if app.config.Checks[CheckCorps][CorpTaxRate] && corpData.TaxRate < app.config.CorpBaseTaxRate {
+	if app.config.Checks[CheckCorpTaxRate] && corpData.TaxRate < app.config.CorpBaseTaxRate {
 		results.Errors = append(results.Errors, fmt.Sprintf("Tax rate is %.f%% (expected at least %.f%%)", corpData.TaxRate*100, app.config.CorpBaseTaxRate*100))
 	}
-	if app.config.Checks[CheckCorps][CorpWarEligible] && corpData.WarEligible {
+	if app.config.Checks[CheckCorpWarEligible] && corpData.WarEligible {
 		results.Errors = append(results.Errors, "Corporation is War Eligible.")
 	}
-	if len(app.config.Checks[CheckChars]) > 0 {
-		app.discoverNaughtyMembers(corpID, &corpData, results, charIgnoreList, startTime)
-	}
+	app.discoverNaughtyMembers(corpID, &corpData, results, charIgnoreList)
 
 	return results
 }
 
-func (app *app) checkCeoNotifications(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult, now time.Time, startTime time.Time) {
+func (app *app) checkCeoNotifications(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult) {
+	defer app.perfTime(fmt.Sprintf("check ceo notifications %d", corpID), nil)
+	l := app.logger.With(slog.Int("corpID", int(corpID)), slog.Int("ceoID", int(corpData.CeoId)))
+	if !app.config.Checks[CheckCorpWarEligible] || !app.config.Checks[CheckCorpTaxRate] {
+		app.logger.Info("no checks for notifications")
+		return
+	}
 	ceoStringID := optional.NewString(results.Ceo.Name)
 	notificationOps := &esi.GetCharactersCharacterIdNotificationsOpts{Datasource: ceoStringID}
 	notifications, response, err := app.proxyEsi.ESI.CharacterApi.GetCharactersCharacterIdNotifications(app.proxyAuthContext, corpData.CeoId, notificationOps)
 	if err != nil {
 		logline := "Proxy: Error getting CEO's notifications."
+		l.Error(logline, slog.Any("response", response), slog.Any("error", err))
 		if response == nil {
 			logline = logline + fmt.Sprintf(" corpID=%d ceoID=%d httpResponse=nil error=\"%s\"", corpID, corpData.CeoId, err.Error())
 			results.Errors = append(results.Errors, logline)
-			log.Print(logline)
 			return
 		}
 		logline = logline + fmt.Sprintf(" corpID=%d ceoID=%d status=\"%s\" error=\"%s\"", corpID, corpData.CeoId, response.Status, err.Error())
-		log.Print(logline)
 
 		switch response.StatusCode {
 		case http.StatusForbidden:
-			results.Warnings = append(results.Warnings, "Re-auth corp CEO: Needs ESI scope for notifications.")
+			results.Errors = append(results.Errors, "Re-auth corp CEO: Needs ESI scope for notifications.")
 		default:
-			results.Warnings = append(results.Warnings, logline)
+			results.Errors = append(results.Errors, logline)
 		}
 	}
 
 	for _, notif := range notifications {
-		if notif.Timestamp.Add(time.Hour).Before(now) {
+		if notif.Timestamp.Add(time.Hour).Before(time.Now().UTC()) {
 			continue
 		}
 
@@ -441,34 +426,38 @@ func (app *app) checkCeoNotifications(corpID int32, corpData *esi.GetCorporation
 		msgLevel := &results.Errors
 		switch notif.Type_ {
 		case "CorpNoLongerWarEligible":
-			if app.config.Checks[CheckNotifs][NotifWarStatus] {
+			if app.config.Checks[CheckNotifWarStatus] {
 				msg = "No longer war eligible"
 				msgLevel = &results.Info
 			}
 		case "CorpBecameWarEligible":
-			if app.config.Checks[CheckNotifs][NotifWarStatus] {
+			if app.config.Checks[CheckNotifWarStatus] {
 				msg = "Became war eligible"
 			}
 		case "StructureAnchoring":
-			if app.config.Checks[CheckNotifs][NotifAnchoring] {
+			if app.config.Checks[CheckNotifAnchoring] {
 				msg = "Has a structure anchoring"
 			}
 		case "StructureOnline":
-			if app.config.Checks[CheckNotifs][NotifOnlining] {
+			if app.config.Checks[CheckNotifOnlining] {
 				msg = "Has onlined a structure"
 			}
 		}
 
 		if msg != "" {
-			msg = fmt.Sprintf("%s at %s", msg, notif.Timestamp.Format(dateTimeFormat))
+			msg = fmt.Sprintf("%s at %s", msg, notif.Timestamp.Format(DateTimeFormat))
 			*msgLevel = append(*msgLevel, msg)
 		}
 	}
-
-	log.Printf("Parsed CEO's notifications after %f ceoID=%d corpID=%d", time.Since(startTime).Seconds(), corpData.CeoId, corpID)
 }
 
-func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult, charIgnoreList []int32, startTime time.Time) {
+func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult, charIgnoreList []int32) {
+	defer app.perfTime("discovered naughty members", nil, slog.Int("corpID", int(corpID)))
+	l := app.logger.With(slog.Int("corpID", int(corpID)))
+	if !app.config.Checks[CheckCharsExist] && !app.config.Checks[CheckCharsValid] && !app.config.Checks[CheckCharsMember] {
+		l.Info("no character checks to perform")
+		return
+	}
 	const defaultChunkSize = 30
 
 	// Get member list from ESI - datasource changes based on what corp you're querying, use the CEO's charID.
@@ -477,14 +466,13 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	esiCorpMembers, response, err := app.proxyEsi.ESI.CorporationApi.GetCorporationsCorporationIdMembers(app.proxyAuthContext, corpID, corpMembersOpts)
 	if err != nil {
 		logline := "Proxy: Error getting characters for corp from esi."
+		l.Error(logline, slog.Any("response", response), slog.Any("error", err))
 		if response == nil {
 			logline = logline + fmt.Sprintf(" (Invalid CEO Token?) corpID=%d httpResponse=nil error=\"%s\"", corpID, err.Error())
 			results.Errors = append(results.Errors, logline)
-			log.Print(logline)
 			return
 		}
 		logline = logline + fmt.Sprintf(" corpID=%d status=\"%s\" error=\"%s\"", corpID, response.Status, err.Error())
-		log.Print(logline)
 
 		switch response.StatusCode {
 		default:
@@ -495,44 +483,40 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 
 		return
 	}
-	log.Printf("ESI Corp Members retrieved after %f corpID=%d", time.Since(startTime).Seconds(), corpID)
 
 	// Get member list from Neucore
 	neuCorpMembers, _, err := app.neu.ApplicationCharactersApi.CharacterListV1(app.neucoreContext).RequestBody(esiCorpMembers).Execute()
 	if err != nil {
-		log.Printf("Neu: Error getting characters for corp from neucore. corpID=%d error=\"%s\"", corpID, corpData.Name)
+		l.Error("Neu: Error getting characters for corp from neucore", slog.Any("error", err))
 		results.Errors = append(results.Errors, fmt.Sprintf("Error getting characters from Neucore. error=\"%s\"", err.Error()))
 		return
 	}
-	log.Printf("Neucore Corp Members retrieved after %f corpID=%d", time.Since(startTime).Seconds(), corpID)
 
 	///////////////////
 
 	// Determine if a character is missing or has an invalid token in neucore.
 	var missingMembers []int32
 	var invalidMembers []int32
-	for _, charID := range esiCorpMembers {
-		if app.config.Checks[CheckChars][CharsExist] &&
-			!slices.ContainsFunc[neucoreapi.Character](neuCorpMembers, func(c neucoreapi.Character) bool {
-				return c.GetId() == int64(charID)
-			}) {
-			// missing character
+	if app.config.Checks[CheckCharsExist] || app.config.Checks[CheckCharsValid] {
+		for _, charID := range esiCorpMembers {
 			if slices.Contains(charIgnoreList, charID) {
-				log.Printf("Ignored Character missing from neucore id=%d", charID)
+				l.Info("Ignored Character")
 				continue
 			}
-			missingMembers = append(missingMembers, charID)
-		} else {
-			if app.config.Checks[CheckChars][CharsValid] &&
+			if app.config.Checks[CheckCharsExist] &&
 				!slices.ContainsFunc[neucoreapi.Character](neuCorpMembers, func(c neucoreapi.Character) bool {
 					return c.GetId() == int64(charID)
 				}) {
-				// invalid token
-				if slices.Contains(charIgnoreList, charID) {
-					log.Printf("Ignored Character with invalid neucore token id=%d", charID)
-					continue
+				// missing character
+				missingMembers = append(missingMembers, charID)
+			} else {
+				if app.config.Checks[CheckCharsValid] &&
+					!slices.ContainsFunc[neucoreapi.Character](neuCorpMembers, func(c neucoreapi.Character) bool {
+						return c.GetId() == int64(charID)
+					}) {
+					// invalid token
+					invalidMembers = append(invalidMembers, charID)
 				}
-				invalidMembers = append(invalidMembers, charID)
 			}
 		}
 	}
@@ -545,7 +529,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	naughtyIDs := append(missingMembers, invalidMembers...)
 	missingMemberStrings, invalidMemberStrings, err = app.chunkNameRequest(naughtyIDs, missingMembers, invalidMembers)
 	if err != nil {
-		log.Printf("%s", err.Error())
+		l.Error("error getting names from ids", slog.Any("error", err))
 	}
 
 	////////////////////
@@ -553,10 +537,10 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	// Check for characters in Neucore, but lacking 'member' group (no chars in brave proper, or gone inactive)
 	var charsMissingGroup []int32
 	var namesMissingGroup []string
-	if app.config.Checks[CheckChars][CharsMember] {
+	if app.config.Checks[CheckCharsMember] {
 		characterGroups, _, err := app.neu.ApplicationGroupsApi.GroupsBulkV1(app.neucoreContext).RequestBody(esiCorpMembers).Execute()
 		if err != nil {
-			log.Printf("Neu: Error retreiving bulk character groups error=\"%s\"", err.Error())
+			l.Error("Neu: Error retreiving bulk character groups", slog.Any("error", err))
 		}
 
 		for _, char := range characterGroups {
@@ -567,6 +551,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 			if slices.Contains(naughtyIDs, charID) {
 				continue
 			}
+			log := l.With(slog.Int("charID", int(charID)))
 
 			if !slices.ContainsFunc[neucoreapi.Group](char.Groups, func(g neucoreapi.Group) bool {
 				return g.GetName() == "member"
@@ -577,7 +562,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 					c := char.GetCharacter()
 					message := fmt.Sprintf("Error retrieving alts. character=%d error=\"%s\"", c.GetId(), err.Error())
 					results.Warnings = append(results.Warnings, message)
-					log.Print(message)
+					log.Error("error retrieving alts", slog.Int("character", int(c.GetId())), slog.Any("error", err))
 				}
 
 				hasCharWithInvalidToken := false
@@ -645,15 +630,13 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 			strings.Join(missingGroupMemberStrings, ", ")))
 	}
 
-	log.Printf("Naughty list compiled after %f corpID=%d err/warn/info=%d/%d/%d missing=%d invalid=%d notMember=%d",
-		time.Since(startTime).Seconds(),
-		corpID,
-		len(results.Errors),
-		len(results.Warnings),
-		len(results.Info),
-		numMissingMembers,
-		numInvalidMembers,
-		numMembersMissingGroup)
+	l.Info("naughty list compiled",
+		slog.Int("errors", len(results.Errors)),
+		slog.Int("warnings", len(results.Warnings)),
+		slog.Int("infos", len(results.Info)),
+		slog.Int("missing", numMissingMembers),
+		slog.Int("invalid", numInvalidMembers),
+		slog.Int("non-member", numMembersMissingGroup))
 }
 
 func (app *app) esiHealthCheck() ([]string, error) {
@@ -662,15 +645,15 @@ func (app *app) esiHealthCheck() ([]string, error) {
 	var err error
 	status, _, err := app.esi.Meta.MetaApi.GetStatus(context.Background(), nil)
 	if err != nil {
-		log.Printf("Error getting ESI Status error=\"%s\"", err.Error())
+		app.logger.Error("Error getting ESI Status", slog.Any("error", err))
 		generalErrors = append(generalErrors, "Error getting ESI Status")
 		return generalErrors, err
 	}
 
 	for _, endpoint := range status {
 		if endpoint.Status != "green" {
-			usedEndpoint := endpoint.Route == "/alliances/{alliance_id}/corporations/" || // public,  corp list
-				endpoint.Route == "/corporations/{corporation_id}/" || // public,  tax rate
+			usedEndpoint := endpoint.Route == "/alliances/{alliance_id}/corporations/" || // public, corp list
+				endpoint.Route == "/corporations/{corporation_id}/" || // public, tax rate
 				endpoint.Route == "/corporations/{corporation_id}/members/" || // private, character list
 				endpoint.Route == "/characters/{character_id}/notifications/" // private, war and structure notifs
 
@@ -684,10 +667,40 @@ func (app *app) esiHealthCheck() ([]string, error) {
 		}
 	}
 
-	return generalErrors, err
+	return generalErrors, nil
+}
+
+func (app *app) neucoreRolesCheck() ([]string, error) {
+	defer app.perfTime("neucoreRolesCheck", nil)
+	var generalErrors []string
+	neucoreAppData, _, err := app.neu.ApplicationApi.ShowV1(app.neucoreContext).Execute()
+	if err != nil {
+		neucoreError := fmt.Sprintf("Error checking neucore app info. error=\"%s\"", err.Error())
+		app.logger.Error("error checking neucore app info", slog.Any("error", err))
+		generalErrors = append(generalErrors, neucoreError)
+		return generalErrors, err
+	}
+
+	for _, rr := range requiredRoles {
+		success := false
+		for _, role := range neucoreAppData.Roles {
+			if rr == role {
+				success = true
+			}
+		}
+		if !success {
+			// dump and die
+			msg := fmt.Sprintf("Neucore Config Error - Missing Roles:\nGiven: %v\nReq'd: %v", neucoreAppData.Roles, requiredRoles)
+			app.logger.Error("neucore config error - missing roles", slog.Any("given", neucoreAppData.Roles), slog.Any("required", requiredRoles))
+			generalErrors = append(generalErrors, msg)
+			return generalErrors, fmt.Errorf("app missing required neucore roles")
+		}
+	}
+	return nil, nil
 }
 
 func (app *app) chunkNameRequest(naughtyIDs []int32, missingMembers []int32, invalidMembers []int32) ([]string, []string, error) {
+	defer app.perfTime("chunk name request", nil)
 	const NAME_POST_LIMIT = 1000
 	if len(naughtyIDs) <= 0 {
 		return []string{}, []string{}, nil

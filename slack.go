@@ -3,11 +3,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
 	"github.com/slack-go/slack"
+	"golang.org/x/exp/slog"
 )
 
 // 2022-09-13: Slack currently has a bug where it will resend messages n times where n = totalBlockTextLength / 4040
@@ -32,7 +32,7 @@ func getBlocksUpperBugged(blocks []slack.Block, lower int, upper int) int {
 }
 
 func (app *app) generateStatusFooterBlock(generalErrors []string, blocks []slack.Block) []slack.Block {
-	if app.config.Quiet && len(generalErrors) == 0 {
+	if app.config.Quiet && len(blocks) == 0 && len(generalErrors) == 0 {
 		return blocks
 	}
 	generalErrors = append(generalErrors, fmt.Sprintf("Completed execution in %v", time.Since(app.startTime)))
@@ -44,6 +44,7 @@ func (app *app) generateStatusFooterBlock(generalErrors []string, blocks []slack
 }
 
 func (app *app) generateAndSendWebhook(generalErrors []string, blocks []slack.Block) {
+	app.perfTime("generate and send webhook", nil)
 	blocks = app.generateStatusFooterBlock(generalErrors, blocks)
 
 	// slack has a 50 block limit per message, and 1 message per second limit ("burstable.")
@@ -62,12 +63,17 @@ func (app *app) generateAndSendWebhook(generalErrors []string, blocks []slack.Bl
 		}
 
 		j, _ := json.Marshal(msg)
-		log.Printf(`posting webhook batchLen=%d totalSentBlocks=%d queuedBlocks=%d range="%d:%d" payload="%s"`, batchLen, totalSentBlocks, queuedBlocks, totalSentBlocks, upper, string(j))
+		app.logger.Info("posting webhook",
+			slog.Int("batchLen", batchLen),
+			slog.Int("totalSentBlocks", totalSentBlocks),
+			slog.Int("queuedBlocks", queuedBlocks),
+			slog.String("range", fmt.Sprintf("%d:%d", totalSentBlocks, upper)),
+			slog.String("payload", string(j)),
+		)
 		// send rate is 1 message per second "burstable"
 		time.Sleep(1 * time.Second)
 		if err := slack.PostWebhook(app.config.SlackWebhookURL, msg); err != nil {
-			raw, _ := json.Marshal(&msg)
-			log.Printf("Slack POST Webhook error=\"%s\" request=\"%s\"", err.Error(), string(raw))
+			app.logger.Error("error posting slack webhook", slog.Any("error", err), slog.Any("requestBody", string(j)))
 		}
 	}
 }
