@@ -67,6 +67,7 @@ type config struct {
 	IgnoreChars             []int32         `yaml:"IgnoreChars"`
 	Checks                  map[string]bool `yaml:"Checks"`
 	Quiet                   bool            `yaml:"-"`
+	DryRun                  bool            `yaml:"-"`
 }
 
 type app struct {
@@ -125,8 +126,10 @@ func (app *app) initApp() error {
 	flag.BoolVar(&charExists, "char-exists", false, "Check that the character exists in neucore")
 	flag.BoolVar(&charValid, "char-valid", false, "Check that all alts in neucore have a valid esi token")
 	flag.BoolVar(&charMemberRole, "char-member-role", false, "Check at least one character has the 'member' neucore role")
-	var quiet bool
+	var quiet, dryrun bool
 	flag.BoolVar(&quiet, "q", false, "Don't print the execution time footer to slack if there are no issues")
+	flag.BoolVar(&dryrun, "dry-run", false, "Don't output to slack")
+	flag.BoolVar(&dryrun, "n", false, "alias of --dry-run")
 	flag.Parse()
 
 	// Read in config file into app.config
@@ -142,6 +145,7 @@ func (app *app) initApp() error {
 	}
 	app.config.NeucoreAPIBase = fmt.Sprintf("%s://%s/api", app.config.NeucoreHTTPScheme, app.config.NeucoreDomain)
 	app.config.Quiet = quiet
+	app.config.DryRun = dryrun
 
 	// overwrite check flags with command line settings (if set)
 	flag.Visit(func(f *flag.Flag) {

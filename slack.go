@@ -44,7 +44,10 @@ func (app *app) generateStatusFooterBlock(generalErrors []string, blocks []slack
 }
 
 func (app *app) generateAndSendWebhook(generalErrors []string, blocks []slack.Block) {
-	app.perfTime("generate and send webhook", nil)
+	if app.config.DryRun {
+		return
+	}
+	defer app.perfTime("generate and send webhook", nil)
 	blocks = app.generateStatusFooterBlock(generalErrors, blocks)
 
 	// slack has a 50 block limit per message, and 1 message per second limit ("burstable.")
