@@ -167,7 +167,12 @@ func (app *app) initApp() error {
 			app.config.Checks[CheckCharsMember] = charMemberRole
 		}
 	})
-	app.logger.Info("will perform the following", slog.Any("checks", app.config.Checks))
+	app.logger.Info("will perform the following",
+		slog.Any("alliances", app.config.CheckAlliances),
+		slog.Any("corporations", app.config.CheckCorps),
+		slog.Any("ignored_corps", app.config.IgnoreCorps),
+		slog.Any("ignored_chars", app.config.IgnoreChars),
+		slog.Any("checks", app.config.Checks))
 
 	// Init ESI
 	httpc := &http.Client{Timeout: time.Second * time.Duration(app.config.RequestTimeoutInSeconds)}
