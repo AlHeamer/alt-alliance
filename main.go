@@ -198,7 +198,13 @@ func (app *app) initApp() error {
 		}},
 		OperationServers: map[string]neucoreapi.ServerConfigurations{},
 	})
-	app.neucoreContext = context.WithValue(context.Background(), neucoreapi.ContextOAuth2, neucoreTokenSource)
+
+	t, err := neucoreTokenSource.Token()
+	if err != nil {
+		app.logger.Error("error getting token from token source", slog.Any("error", err))
+		return err
+	}
+	app.neucoreContext = context.WithValue(context.Background(), neucoreapi.ContextAccessToken, t.AccessToken)
 	return nil
 }
 
@@ -276,6 +282,7 @@ func main() {
 			if err != nil {
 				eString = err.Error()
 			}
+			app.logger.Error("error getting finance token data", slog.Int("statuscode", resp.StatusCode), slog.Any("error", err))
 			generalErrors = append(generalErrors, fmt.Sprintf("Neucore: Error getting finance token data statusCode=%d error=%s", resp.StatusCode, eString))
 		}
 		for _, v := range neucoreTokenData {
