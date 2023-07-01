@@ -255,8 +255,9 @@ func main() {
 			for allianceID := range queue {
 				allianceCorps, _, err := app.esi.ESI.AllianceApi.GetAlliancesAllianceIdCorporations(context.TODO(), allianceID, nil)
 				if err != nil {
-					logline := fmt.Sprintf("ESI: Error getting alliance corp list for allianceID=%d error=\"%s\"", allianceID, err.Error())
+					app.logger.Error("ESI: Error getting alliance corp list", slog.Int64("allianceID", int64(allianceID)), slog.Any("error", err))
 					// dump and exit
+					logline := fmt.Sprintf("ESI: Error getting alliance corp list for allianceID=%d error=\"%s\"", allianceID, err.Error())
 					generalErrors = append(generalErrors, logline)
 					break
 				}
@@ -282,7 +283,7 @@ func main() {
 			if err != nil {
 				eString = err.Error()
 			}
-			app.logger.Error("error getting finance token data", slog.Int("statuscode", resp.StatusCode), slog.Any("error", err))
+			app.logger.Error("neucore: error getting finance token data", slog.Int("statuscode", resp.StatusCode), slog.Any("error", err))
 			generalErrors = append(generalErrors, fmt.Sprintf("Neucore: Error getting finance token data statusCode=%d error=%s", resp.StatusCode, eString))
 		}
 		for _, v := range neucoreTokenData {
@@ -406,7 +407,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList []int32) *corpVer
 }
 
 func (app *app) checkCeoNotifications(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult) {
-	defer app.perfTime(fmt.Sprintf("check ceo notifications %d", corpID), nil)
+	defer app.perfTime("check ceo notifications", nil, slog.Int("corpID", int(corpID)))
 	l := app.logger.With(slog.Int("corpID", int(corpID)), slog.Int("ceoID", int(corpData.CeoId)))
 	if !app.config.Checks[CheckCorpWarEligible] || !app.config.Checks[CheckCorpTaxRate] {
 		app.logger.Info("no checks for notifications")
