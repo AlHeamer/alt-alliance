@@ -11,7 +11,7 @@ NeucoreDomain: neucore.tian-space.net
 NeucoreAppSecret: super-secret-code
 NeucoreUserAgent: net.tian-space.alt-alliance
 EsiUserAgent: net.tian-space.alt-alliance
-SlackWebhookUrl: ""
+SlackWebhookURL: ""
 # Check/Ignore lists can be formatted as [1,2,3] or one per line as below
 CheckAlliances:
   - 434243723 # C C P Alliance
