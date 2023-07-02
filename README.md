@@ -1,152 +1,94 @@
 # Alt Alliance
-## Requirements and Dependancies
-* MySQL or compatible database
-* Golang 1.7 (developed with 1.15, has been used with 1.1, but may require some fiddling, mainly from use of `context`. may require editing imports for golang.org/x/net/context)
-* Go imports
-  * goesi
-  * goesi/optional
-  * neucore-api-go
-  * gorm
-  * gorm/dialects/mysql
-  * slack
-  * oauth2
 
-## ENV Vars and Command Line Params
-alt-alliance requires the following environment variables set in order to function:
-* `-u` or `DB_USER` - The username used to access the database.
-* `-p` or `DB_PASS` - The password for the user.
-* `-h` or `DB_HOST` - The hostname of the database to connect to (can be a unix socket, ip address, or domain.)
-* `-d` or `DB_NAME` - The name of the database to use.
-Checks can be unset via the command line using `-check=f`, currently, `-corp-update-bounties` is false by default
+## Usage
+
+Primary configuration should be done using a config yaml file, an example of which is provided in the repository `config.example.yaml`.
+Checks can be overridden on the command line from those defined in the supplied config file checks will be set using `-check_flag`, and unset with`-check_flag=f`
 ```
-Usage of alt-alliance:
+Usage of ./alt-alliance:
+  unset checks using -flag=f
+
   -char-exists
-    	Check that characters exist in neucore (default true)
+    	Check that the character exists in neucore
   -char-member-role
-    	Check that characters have the 'member' role in neucore (default true)
-  -char-valid-token
-    	Check that characters have a valid esi token in neucore (default true)
-  -corp-tax-rate
-    	Check corporation tax rate is set correctly (default true)
-  -corp-update-bounties
-    	Record corp pirate bounties for tax purposes
-  -corp-war-eligible
-    	Check corporation war eligibility (default true)
-  -d string
-    	The name of the database to use. (env var DB_NAME) (default "alt_alliance")
-  -h string
-    	The hostname of the database to connect to (can be a unix socket, ip address, or domain.) (env var DB_HOST) (default "/tmp/mysql.sock")
-  -notif-structure-anchoring
-    	Check for anchoring structures (default true)
-  -notif-structure-online
-    	Check for onlining structures (default true)
-  -notif-war-status
-    	Check for changes in war eligibility status (default true)
-  -p string
-    	The password for the user. (env var DB_PASS)
-  -u string
-    	The username used to access the database. (env var DB_USER) (default "root")
+    	Check at least one character has the 'member' neucore role
+  -char-valid
+    	Check that all alts in neucore have a valid esi token
+  -corp-tax
+    	Check that corp tax rate matches that set in config
+  -corp-war
+    	Check that corps are not war eligible
+  -dry-run
+    	Don't output to slack
+  -f string
+    	Config file to use (default "./config.yaml")
+  -n	alias of -dry-run
+  -notif-structure
+    	Check CEO notifications for anchoring or onlining structures
+  -notif-war
+    	Check CEO notifications for changes in war eligibility status
+  -q	Don't print the execution time footer to slack if there are no issues
 ```
-
-Command line params will overwrite ENV Vars.
-
-## Config
-alt-alliance will auto-create the required tables if they don't exist. If you prefer to create the config table yourself, use the following:
-``` SQL
-CREATE TABLE `configs` (
-  `neucore_app_id`                     int unsigned DEFAULT NULL,
-  `threads`                            int DEFAULT '20',
-  `corp_tax_character_id`              int DEFAULT NULL,
-  `corp_tax_corp_id`                   int DEFAULT NULL,
-  `corp_base_tax_rate`                 double DEFAULT NULL,
-  `corp_base_fee`                      double DEFAULT NULL,
-  `request_timeout_in_seconds`         bigint DEFAULT '120',
-  `corp_journal_update_interval_hours` int unsigned DEFAULT '24',
-  `neucore_http_scheme`                varchar(255) DEFAULT 'http',
-  `neucore_domain`                     varchar(255) DEFAULT NULL,
-  `neucore_app_secret`                 varchar(255) DEFAULT NULL,
-  `neucore_user_agent`                 varchar(255) DEFAULT NULL,
-  `neucore_api_base`                   varchar(255) DEFAULT NULL,
-  `esi_user_agent`                     varchar(255) DEFAULT NULL,
-  `slack_webhook_url`                  varchar(255) DEFAULT NULL,
-  `evemail_subject`                    varchar(255) DEFAULT NULL,
-  `evemail_body`                       text
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-```
-
-Example configuration:
-``` SQL
-INSERT INTO `configs` VALUES (
-  1,
-  20,
-  NULL, -- characterID who will send invoice evemails
-  NULL, -- corporationID who will receive payments
-  0.1,
-  100000000,
-  120,
-  24,
-  'http',
-  'localhost:8080',
-  'neucore-app-secret',
-  'neucore-user-agent',
-  NULL,
-  'esi-user-agent',
-  'https://hooks.slack.com/services/its/a/webhook',
-  'Alliance Invoice for %s',                          -- %s here is the YYYY-MM-DD formatted date.
-  "Pay us %s ISK or you'll never see your fedo again" -- %s here is the amount of isk owed.
-);
-```
-
-## Check and Ignore Lists
-Manually add an alliance to check:
-
-`INSERT INTO checked_alliances (alliance_id) VALUES({alliance_id});`
-
-Manually add an individual corp to check:
-
-`INSERT INTO checked_corps (corp_id) VALUES({corp_id});`
-
-Do not check a corporation, even if it's in a checked alliance or contained within the corp check list:
-
-`INSERT INTO ignored_corps (corp_id, reason) VALUES({corp_id}, {some reason});`
-
-Do not check a corporation, even if it's in a checked alliance or contained within the corp check list:
-
-`INSERT INTO ignored_characters (character_id, reason) VALUES({character_id}, {some reason});`
 
 ## Building
-### Build via Docker
-alt-alliance can be built using the following docker command from the top level of the repository:
-```
-docker run -v $PWD:/build golang:1.17-bullseye /bin/sh -c "cd /build; go build ./..."
-```
-or a stripped binary with
-```
-docker run -v $PWD:/build golang:1.17-bullseye /bin/sh -c "cd /build; go build -gcflags -trimpath=/build -ldflags "-s -w" ./..."
-```
 
-### Building Manually
-**NOTE:** exports will vary based on your installation/environment
+### Requirements and Dependancies
+
+* Golang 1.20
+	- Additional go libraries/dependencies are listed in `go.mod`
+
+### Manual Build
+
+At this time, `neucore-api-go v0.0.0-20230618143013-6eda4be041a3` has a compile error in it that can be worked around with the following: 
 ``` bash
-export GOPATH=$HOME/go
-export GOBIN=$GOPATH/bin
-export GOROOT=/usr/lib/go-1.10
-export PATH="$PATH:${GOPATH}/bin:${GOROOT}/bin"
+UTILS=$GOPATH/pkg/mod/github.com/bravecollective/neucore-api-go@v0.0.0-20230618143013-6eda4be041a3/utils.go
+chmod +w $UTILS
+cat <<EOT >> $UTILS
 
-cd path/to/alt-alliance
+func isNil(i interface{}) bool {
+	return IsNil(i)
+}
+EOT
+chmod -w $UTILS
+```
 
-go get ./...
-
+From the top level of the repository, run
+``` bash
 go build
 ```
-You may want to modify how go builds alt-alliance. For example to remove DWARF debugging info `-w`, GO symbols `-s`, and build machine paths `-trimpath`, you would want to run `go build -gcflags -trimpath=$PWD -ldflags "-s -w"`
+
+You may want to build for different platforms, like `linux`, `windows`, `darwin` (macos), or architechtures; `amd64`, `arm64`. Trimming the binary size can be done by removing DWARF debugging info `-w`, GO symbols `-s`, and build machine paths `-trimpath`, you would want to run `go build -gcflags -trimpath=$PWD -ldflags "-s -w"`
+``` bash
+env GOOS=linux GOARCH=arm64 go build -gcflags -trimpath=$PWD -ldflags "-s -w"
+```
+
+### Build via Docker
+
+alt-alliance can be built using the following docker command from the top level of the repository:
+``` bash
+docker run -v $PWD:/build golang:1.20 /bin/sh -c "cd /build; go build"
+```
+
+crosscompiled to other platforms (linux/arm64 for example)
+``` bash
+docker run -v $PWD:/build golang:1.20 /bin/sh -c "cd /build; env GOOS=linux GOARCH=arm64 go build -o aa_linux_arm64"
+```
+
+``` bash
+docker run -v $PWD:/build golang:1.20 /bin/sh -c "cd /build; go build -gcflags -trimpath=/build -ldflags "-s -w""
+```
+
+for alternate docker images like alpine, check https://hub.docker.com/_/golang
 
 ## TODO
-* Track corp taxes, fees, and payments
+
+* Retry calls on error/timeout/etc.
 * Cache endpoint calls
 
 ## EVEMail Markup
+
 ### Special Characters and HTML Tags
+
 Eve supports several standard html tags and special characters:
 * `<br>` (force a new line)
 * `<b>bold text</b>`
@@ -158,51 +100,42 @@ Eve supports several standard html tags and special characters:
 * `&gt;` >
 
 #### Colours
-Using the `font` tag, you can specify the colour of your text in the hex format `#AARRGGBB` This differs from standard HTML with the addition of `AA` for an alpha (transperancy) value.
+
+Using the `font` tag, you can specify the colour of your text in the hex format `#AARRGGBB` This differs from standard HTML with the addition of `AA` for an alpha (transparency) value.
 * Default text colour: `#b3ffffff`
 * Type link colour: `#ffd98d00`
 
 ### Showinfo Links
+
 You can also link to item types with a custom href of the following format:
 ``` html
 <a href="showinfo:TypeID">Type Name</a>
 ```
-for example: `<a href="showinfo:34">Tritanium</a>`
+eg. `<a href="showinfo:34">Tritanium</a>`
 
 Some types also support linking a specific instance of that type in the format:
 ``` html
 <a href="showinfo:TypeID//InstanceID">Specific Type Name</a>
 ```
-for example: `<a href="showinfo:2//109299958">C C P</a>`
+eg. `<a href="showinfo:2//109299958">C C P</a>`
 
-|   Type Name   | Type ID |
-|--------------:|--------:|
-| Character     |    1377 |
-| Corporation   |       2 |
-| Alliance      |   16159 |
-| Region        |       3 |
-| Constellation |       4 |
-| Solar System  |       5 |
-| Moon          |      14 |
-| Asteroid Belt |      15 |
-| Faction       |      30 |
-| Raitaru       |   35825 |
-| Azbel         |   35826 |
-| Sotiyo        |   35827 |
-| Astrahus      |   35832 |
-| Fortizar      |   35833 |
-| Keepstar      |   35834 |
-| Athanor       |   35835 |
-| Tatara        |   35836 |
+|   Type Name   | Type ID |   Type Name   | Type ID |
+|---------------|--------:|---------------|--------:|
+| Alliance      |   16159 | Astrahus      |   35832 |
+| Asteroid Belt |      15 | Athanor       |   35835 |
+| Character     |    1377 | Azbel         |   35826 |
+| Constellation |       4 | Fortizar      |   35833 |
+| Corporation   |       2 | Keepstar      |   35834 |
+| Faction       |      30 | Raitaru       |   35825 |
+| Moon          |      14 | Sotiyo        |   35827 |
+| Region        |       3 | Tatara        |   35836 |
+| Solar System  |       5 |               |         |
 
 #### Additional Examples
+
 ``` html
 <a href="showinfo:2//109299958">C C P</a>
 <a href="showinfo:16159//434243723">C C P Alliance</a>
 <a href="showinfo:1529//60003466">Jita IV - Moon 4 - Caldari Business Tribunal Bureau Offices</a>
 <a href="showinfo:52678//60003760">Jita IV - Moon 4 - Caldari Navy Assembly Plant</a>
-<a href="showinfo:35834//1028858195912">Perimeter - Tranquility Trading Tower</a>
 ```
-
-## Errata
-* Upon the first run where a corp's most recent transaction was a payment made to the holdings corp, the first entry in the `corp_tax_payments` table will have a negative balance field.

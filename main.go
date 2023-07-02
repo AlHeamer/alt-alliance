@@ -129,7 +129,7 @@ func (app *app) initApp() error {
 	var quiet, dryrun bool
 	flag.BoolVar(&quiet, "q", false, "Don't print the execution time footer to slack if there are no issues")
 	flag.BoolVar(&dryrun, "dry-run", false, "Don't output to slack")
-	flag.BoolVar(&dryrun, "n", false, "alias of --dry-run")
+	flag.BoolVar(&dryrun, "n", false, "alias of -dry-run")
 	flag.Parse()
 
 	// Read in config file into app.config
