@@ -411,7 +411,7 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList []int32) *corpVer
 func (app *app) checkCeoNotifications(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult) {
 	defer app.perfTime("check ceo notifications", nil, slog.Int("corpID", int(corpID)))
 	l := app.logger.With(slog.Int("corpID", int(corpID)), slog.Int("ceoID", int(corpData.CeoId)))
-	if !app.config.Checks[CheckCorpWarEligible] || !app.config.Checks[CheckCorpTaxRate] {
+	if !app.config.Checks[CheckNotifAnchoring] && !app.config.Checks[CheckNotifOnlining] && !app.config.Checks[CheckNotifWarStatus] {
 		app.logger.Info("no checks for notifications")
 		return
 	}
