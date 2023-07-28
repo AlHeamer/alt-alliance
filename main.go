@@ -273,24 +273,26 @@ func main() {
 	}
 	close(queue)
 
-	wg.Add(1)
 	financeTokens := make(map[int32]bool)
-	go func() {
-		defer wg.Done()
-		neucoreTokenData, resp, err := app.neu.ApplicationESIApi.EsiEveLoginTokenDataV1(app.neucoreContext, "finance").Execute()
-		if err != nil || resp.StatusCode != http.StatusOK {
-			eString := "nil"
-			if err != nil {
-				eString = err.Error()
+	if app.config.Checks[CheckCorpTaxRate] {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			neucoreTokenData, resp, err := app.neu.ApplicationESIApi.EsiEveLoginTokenDataV1(app.neucoreContext, "finance").Execute()
+			if err != nil || resp.StatusCode != http.StatusOK {
+				eString := "nil"
+				if err != nil {
+					eString = err.Error()
+				}
+				app.logger.Error("neucore: error getting finance token data", slog.Int("statuscode", resp.StatusCode), slog.Any("error", err))
+				generalErrors = append(generalErrors, fmt.Sprintf("Neucore: Error getting finance token data statusCode=%d error=%s", resp.StatusCode, eString))
 			}
-			app.logger.Error("neucore: error getting finance token data", slog.Int("statuscode", resp.StatusCode), slog.Any("error", err))
-			generalErrors = append(generalErrors, fmt.Sprintf("Neucore: Error getting finance token data statusCode=%d error=%s", resp.StatusCode, eString))
-		}
-		for _, v := range neucoreTokenData {
-			financeTokens[v.GetCorporationId()] = true
-		}
-		delete(financeTokens, 0)
-	}()
+			for _, v := range neucoreTokenData {
+				financeTokens[v.GetCorporationId()] = true
+			}
+			delete(financeTokens, 0)
+		}()
+	}
 
 	wg.Wait()
 
