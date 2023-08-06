@@ -257,7 +257,7 @@ func main() {
 				if err != nil {
 					app.logger.Error("ESI: Error getting alliance corp list", slog.Int64("allianceID", int64(allianceID)), slog.Any("error", err))
 					// dump and exit
-					logline := fmt.Sprintf("ESI: Error getting alliance corp list for allianceID=%d error=\"%s\"", allianceID, err.Error())
+					logline := fmt.Sprintf(`ESI: Error getting alliance corp list for allianceID=%d error="%s"`, allianceID, err.Error())
 					generalErrors = append(generalErrors, logline)
 					break
 				}
@@ -373,11 +373,11 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList []int32) *corpVer
 		l.Error("Neu: error retreiving CEO's main", slog.Int64("ceoID", ceoId), slog.String("status", status), slog.Any("error", err))
 		logline := "Neu: Error retreiving CEO's main."
 		if response == nil {
-			logline = logline + fmt.Sprintf(" ceoID=%d corpID=%d httpResponse=nil error=\"%s\"", corpID, corpData.CeoId, err.Error())
+			logline = logline + fmt.Sprintf(` ceoID=%d corpID=%d httpResponse=nil error="%s"`, corpID, corpData.CeoId, err.Error())
 			results.Errors = append(results.Errors, logline)
 			return results
 		}
-		logline = logline + fmt.Sprintf(" ceoID=%d corpID=%d status=\"%s\" error=\"%s\"", corpID, corpData.CeoId, response.Status, err.Error())
+		logline = logline + fmt.Sprintf(` ceoID=%d corpID=%d status="%s" error="%s"`, corpID, corpData.CeoId, response.Status, err.Error())
 
 		switch response.StatusCode {
 		case http.StatusNotFound:
@@ -416,23 +416,23 @@ func (app *app) checkCeoNotifications(corpID int32, corpData *esi.GetCorporation
 		return
 	}
 	ceoStringID := optional.NewString(results.Ceo.Name)
-	notificationOps := &esi.GetCharactersCharacterIdNotificationsOpts{Datasource: ceoStringID}
-	notifications, response, err := app.proxyEsi.ESI.CharacterApi.GetCharactersCharacterIdNotifications(app.proxyAuthContext, corpData.CeoId, notificationOps)
+	notificationOpts := &esi.GetCharactersCharacterIdNotificationsOpts{Datasource: ceoStringID}
+	notifications, response, err := app.proxyEsi.ESI.CharacterApi.GetCharactersCharacterIdNotifications(app.proxyAuthContext, corpData.CeoId, notificationOpts)
 	if err != nil {
 		logline := "Proxy: Error getting CEO's notifications."
 		l.Error(logline, slog.Any("response", response), slog.Any("error", err))
 		if response == nil {
-			logline = logline + fmt.Sprintf(" corpID=%d ceoID=%d httpResponse=nil error=\"%s\"", corpID, corpData.CeoId, err.Error())
+			logline = logline + fmt.Sprintf(` httpResponse=nil error="%s"`, err.Error())
 			results.Errors = append(results.Errors, logline)
 			return
 		}
-		logline = logline + fmt.Sprintf(" corpID=%d ceoID=%d status=\"%s\" error=\"%s\"", corpID, corpData.CeoId, response.Status, err.Error())
+		logline = logline + fmt.Sprintf(` status="%s" error="%s"`, response.Status, err.Error())
 
 		switch response.StatusCode {
-		case http.StatusForbidden:
-			results.Errors = append(results.Errors, "Re-auth corp CEO: Needs ESI scope for notifications.")
 		default:
 			results.Errors = append(results.Errors, logline)
+		case http.StatusForbidden:
+			results.Errors = append(results.Errors, "Re-auth corp CEO: Needs ESI scope for notifications.")
 		}
 	}
 
@@ -487,11 +487,11 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 		logline := "Proxy: Error getting characters for corp from esi."
 		l.Error(logline, slog.Any("response", response), slog.Any("error", err))
 		if response == nil {
-			logline = logline + fmt.Sprintf(" (Invalid CEO Token?) corpID=%d httpResponse=nil error=\"%s\"", corpID, err.Error())
+			logline = logline + fmt.Sprintf(` (Invalid CEO Token?) corpID=%d httpResponse=nil error="%s"`, corpID, err.Error())
 			results.Errors = append(results.Errors, logline)
 			return
 		}
-		logline = logline + fmt.Sprintf(" corpID=%d status=\"%s\" error=\"%s\"", corpID, response.Status, err.Error())
+		logline = logline + fmt.Sprintf(` corpID=%d status="%s" error="%s"`, corpID, response.Status, err.Error())
 
 		switch response.StatusCode {
 		default:
@@ -507,7 +507,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	neuCorpMembers, _, err := app.neu.ApplicationCharactersApi.CharacterListV1(app.neucoreContext).RequestBody(esiCorpMembers).Execute()
 	if err != nil {
 		l.Error("Neu: Error getting characters for corp from neucore", slog.Any("error", err))
-		results.Errors = append(results.Errors, fmt.Sprintf("Error getting characters from Neucore. error=\"%s\"", err.Error()))
+		results.Errors = append(results.Errors, fmt.Sprintf(`Error getting characters from Neucore. error="%s"`, err.Error()))
 		return
 	}
 
@@ -579,7 +579,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 				playerChars, _, err := app.neu.ApplicationCharactersApi.CharactersV1(app.neucoreContext, charID).Execute()
 				if err != nil {
 					c := char.GetCharacter()
-					message := fmt.Sprintf("Error retrieving alts. character=%d error=\"%s\"", c.GetId(), err.Error())
+					message := fmt.Sprintf(`Error retrieving alts. character=%d error="%s"`, c.GetId(), err.Error())
 					results.Warnings = append(results.Warnings, message)
 					log.Error("error retrieving alts", slog.Int("character", int(c.GetId())), slog.Any("error", err))
 				}
@@ -694,7 +694,7 @@ func (app *app) neucoreRolesCheck() ([]string, error) {
 	var generalErrors []string
 	neucoreAppData, _, err := app.neu.ApplicationApi.ShowV1(app.neucoreContext).Execute()
 	if err != nil {
-		neucoreError := fmt.Sprintf("Error checking neucore app info. error=\"%s\"", err.Error())
+		neucoreError := fmt.Sprintf(`Error checking neucore app info. error="%s"`, err.Error())
 		app.logger.Error("error checking neucore app info", slog.Any("error", err))
 		generalErrors = append(generalErrors, neucoreError)
 		return generalErrors, err
@@ -731,10 +731,10 @@ func (app *app) chunkNameRequest(naughtyIDs []int32, missingMembers []int32, inv
 		batchIDs := naughtyIDs[i:min(i+NAME_POST_LIMIT, naughtyCount)]
 		naughtyNames, response, err := app.esi.ESI.UniverseApi.PostUniverseNames(context.TODO(), batchIDs, nil)
 		if err != nil {
-			return nil, nil, fmt.Errorf("error retreving bulk character names request=\"%v\" error=\"%s\"", naughtyIDs, err.Error())
+			return nil, nil, fmt.Errorf(`error retreving bulk character names request="%v" error="%s"`, naughtyIDs, err.Error())
 		}
 		if response.StatusCode != http.StatusOK {
-			return nil, nil, fmt.Errorf("error retreving bulk character names request=\"%v\" status=%d", naughtyIDs, response.StatusCode)
+			return nil, nil, fmt.Errorf(`error retreving bulk character names request="%v" status=%d`, naughtyIDs, response.StatusCode)
 		}
 
 		for _, name := range naughtyNames {
