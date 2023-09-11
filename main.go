@@ -377,13 +377,13 @@ func (app *app) verifyCorporation(corpID int32, charIgnoreList []int32) *corpVer
 			results.Errors = append(results.Errors, logline)
 			return results
 		}
-		logline = logline + fmt.Sprintf(` ceoID=%d corpID=%d status="%s" error="%s"`, corpID, corpData.CeoId, response.Status, err.Error())
+		//logline = logline + fmt.Sprintf(` ceoID=%d corpID=%d status="%s" error="%s"`, corpID, corpData.CeoId, response.Status, err.Error())
 
 		switch response.StatusCode {
+		default:
+			//results.Errors = append(results.Errors, logline)
 		case http.StatusNotFound:
 			results.Errors = append(results.Errors, "CEO or CEO's main not found in Neucore.")
-		default:
-			results.Errors = append(results.Errors, logline)
 		}
 		return results
 	}
@@ -426,11 +426,11 @@ func (app *app) checkCeoNotifications(corpID int32, corpData *esi.GetCorporation
 			results.Errors = append(results.Errors, logline)
 			return
 		}
-		logline = logline + fmt.Sprintf(` status="%s" error="%s"`, response.Status, err.Error())
+		//logline = logline + fmt.Sprintf(` status="%s" error="%s"`, response.Status, err.Error())
 
 		switch response.StatusCode {
 		default:
-			results.Errors = append(results.Errors, logline)
+			//results.Errors = append(results.Errors, logline)
 		case http.StatusForbidden:
 			results.Errors = append(results.Errors, "Re-auth corp CEO: Needs ESI scope for notifications.")
 		}
@@ -491,11 +491,11 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 			results.Errors = append(results.Errors, logline)
 			return
 		}
-		logline = logline + fmt.Sprintf(` corpID=%d status="%s" error="%s"`, corpID, response.Status, err.Error())
+		//logline = logline + fmt.Sprintf(` corpID=%d status="%s" error="%s"`, corpID, response.Status, err.Error())
 
 		switch response.StatusCode {
 		default:
-			results.Errors = append(results.Errors, logline)
+			//results.Errors = append(results.Errors, logline)
 		case http.StatusForbidden:
 			results.Errors = append(results.Errors, "Re-auth corp CEO: Needs ESI scope for member list.")
 		}
