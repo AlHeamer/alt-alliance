@@ -10,8 +10,8 @@ Usage of ./alt-alliance:
 
   -char-exists
     	Check that the character exists in neucore
-  -char-member-role
-    	Check at least one character has the 'member' neucore role
+  -char-groups
+    	Check at least one character has each neucore role
   -char-valid
     	Check that all alts in neucore have a valid esi token
   -corp-tax

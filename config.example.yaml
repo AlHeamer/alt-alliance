@@ -19,9 +19,11 @@ CheckCorps:
   - 1000001   # Doomheim
 IgnoreCorps: [ 109299958, 216121397 ] # CCP, Game Masters
 IgnoreChars:
+RequiredGroups:
+  - member
 Checks:
   CharacterExists: true         # check character exists in neucore
-  CharacterMemberStatus: true   # check neucore account has 'member' status
+  CharacterGroups: true         # check neucore account has all groups assigned
   CharacterValidToken: true     # check neucore account tokens are valid
   CorpTaxRate: true             # Uses CorpBaseTaxRate above
   CorpWarEligible: true         # Error if the corp is war eligible

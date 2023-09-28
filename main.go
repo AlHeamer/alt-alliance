@@ -29,7 +29,7 @@ const (
 const (
 	// char data
 	CheckCharsExist  = "CharacterExists"
-	CheckCharsMember = "CharacterMemberStatus"
+	CheckCharsGroups = "CharacterGroups"
 	CheckCharsValid  = "CharacterValidToken"
 	// corp data
 	CheckCorpTaxRate     = "CorpTaxRate"
@@ -66,6 +66,7 @@ type config struct {
 	IgnoreCorps             []int32         `yaml:"IgnoreCorps"`
 	IgnoreChars             []int32         `yaml:"IgnoreChars"`
 	Checks                  map[string]bool `yaml:"Checks"`
+	RequiredGroups          []string        `yaml:"RequiredGroups"`
 	Quiet                   bool            `yaml:"-"`
 	DryRun                  bool            `yaml:"-"`
 }
@@ -122,10 +123,10 @@ func (app *app) initApp() error {
 	var corpTaxRate, corpWarEligible bool
 	flag.BoolVar(&corpWarEligible, "corp-tax", false, "Check that corp tax rate matches that set in config")
 	flag.BoolVar(&corpTaxRate, "corp-war", false, "Check that corps are not war eligible")
-	var charExists, charValid, charMemberRole bool
+	var charExists, charValid, charGroups bool
 	flag.BoolVar(&charExists, "char-exists", false, "Check that the character exists in neucore")
 	flag.BoolVar(&charValid, "char-valid", false, "Check that all alts in neucore have a valid esi token")
-	flag.BoolVar(&charMemberRole, "char-member-role", false, "Check at least one character has the 'member' neucore role")
+	flag.BoolVar(&charGroups, "char-groups", false, "Check at least one character has the neucore roles defined by config's RequiredGroups")
 	var quiet, dryrun bool
 	flag.BoolVar(&quiet, "q", false, "Don't print the execution time footer to slack if there are no issues")
 	flag.BoolVar(&dryrun, "dry-run", false, "Don't output to slack")
@@ -163,8 +164,8 @@ func (app *app) initApp() error {
 			app.config.Checks[CheckCharsExist] = charExists
 		case "char-valid":
 			app.config.Checks[CheckCharsValid] = charValid
-		case "char-member-role":
-			app.config.Checks[CheckCharsMember] = charMemberRole
+		case "char-groups":
+			app.config.Checks[CheckCharsGroups] = charGroups
 		}
 	})
 	app.logger.Info("will perform the following",
@@ -473,7 +474,7 @@ func (app *app) checkCeoNotifications(corpID int32, corpData *esi.GetCorporation
 func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporationsCorporationIdOk, results *corpVerificationResult, charIgnoreList []int32) {
 	defer app.perfTime("discovered naughty members", nil, slog.Int("corpID", int(corpID)))
 	l := app.logger.With(slog.Int("corpID", int(corpID)))
-	if !app.config.Checks[CheckCharsExist] && !app.config.Checks[CheckCharsValid] && !app.config.Checks[CheckCharsMember] {
+	if !app.config.Checks[CheckCharsExist] && !app.config.Checks[CheckCharsValid] && !app.config.Checks[CheckCharsGroups] {
 		l.Info("no character checks to perform")
 		return
 	}
@@ -556,7 +557,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 	// Check for characters in Neucore, but lacking 'member' group (no chars in brave proper, or gone inactive)
 	var charsMissingGroup []int32
 	var namesMissingGroup []string
-	if app.config.Checks[CheckCharsMember] {
+	if app.config.Checks[CheckCharsGroups] {
 		characterGroups, _, err := app.neu.ApplicationGroupsApi.GroupsBulkV1(app.neucoreContext).RequestBody(esiCorpMembers).Execute()
 		if err != nil {
 			l.Error("Neu: Error retreiving bulk character groups", slog.Any("error", err))
@@ -572,8 +573,8 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 			}
 			log := l.With(slog.Int("charID", int(charID)))
 
-			if !slices.ContainsFunc[neucoreapi.Group](char.Groups, func(g neucoreapi.Group) bool {
-				return g.GetName() == "member"
+			if !slices.ContainsFunc(char.Groups, func(g neucoreapi.Group) bool {
+				return slices.Contains(app.config.RequiredGroups, g.GetName())
 			}) {
 				// check for invalid token on other characters.
 				playerChars, _, err := app.neu.ApplicationCharactersApi.CharactersV1(app.neucoreContext, charID).Execute()
@@ -644,7 +645,7 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 		missingChunkSize := min(defaultChunkSize, numMembersMissingGroup)
 		missingGroupMemberStrings = missingGroupMemberStrings[:missingChunkSize]
 		results.Warnings = append(results.Warnings, fmt.Sprintf(
-			"Characters without 'member' roles: %d\n%s",
+			"Characters missing required role(s): %d\n%s",
 			numMembersMissingGroup,
 			strings.Join(missingGroupMemberStrings, ", ")))
 	}
