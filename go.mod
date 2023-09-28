@@ -3,12 +3,12 @@ module github.com/AlHeamer/alt-alliance
 go 1.20
 
 require (
-	github.com/antihax/goesi v0.0.0-20230628031030-ec0b92c56af4
-	github.com/bravecollective/neucore-api-go v0.0.0-20230618143013-6eda4be041a3
+	github.com/antihax/goesi v0.0.0-20230825031047-33ce868194de
+	github.com/bravecollective/neucore-api-go v0.0.0-20230811204526-2696593fac89
 	github.com/go-yaml/yaml v2.1.0+incompatible
-	github.com/slack-go/slack v0.12.2
-	golang.org/x/exp v0.0.0-20230626212559-97b1e661b5df
-	golang.org/x/oauth2 v0.9.0
+	github.com/slack-go/slack v0.12.3
+	golang.org/x/exp v0.0.0-20230905200255-921286631fa9
+	golang.org/x/oauth2 v0.12.0
 )
 
 require (
@@ -17,7 +17,7 @@ require (
 	github.com/gorilla/websocket v1.5.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
-	golang.org/x/net v0.11.0 // indirect
-	google.golang.org/appengine v1.6.7 // indirect
+	golang.org/x/net v0.15.0 // indirect
+	google.golang.org/appengine v1.6.8 // indirect
 	google.golang.org/protobuf v1.31.0 // indirect
 )

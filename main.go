@@ -126,7 +126,7 @@ func (app *app) initApp() error {
 	var charExists, charValid, charGroups bool
 	flag.BoolVar(&charExists, "char-exists", false, "Check that the character exists in neucore")
 	flag.BoolVar(&charValid, "char-valid", false, "Check that all alts in neucore have a valid esi token")
-	flag.BoolVar(&charGroups, "char-groups", false, "Check at least one character has the neucore roles defined by config's RequiredGroups")
+	flag.BoolVar(&charGroups, "char-groups", false, "Check at least one character has each neucore role")
 	var quiet, dryrun bool
 	flag.BoolVar(&quiet, "q", false, "Don't print the execution time footer to slack if there are no issues")
 	flag.BoolVar(&dryrun, "dry-run", false, "Don't output to slack")
@@ -524,14 +524,14 @@ func (app *app) discoverNaughtyMembers(corpID int32, corpData *esi.GetCorporatio
 				continue
 			}
 			if app.config.Checks[CheckCharsExist] &&
-				!slices.ContainsFunc[neucoreapi.Character](neuCorpMembers, func(c neucoreapi.Character) bool {
+				!slices.ContainsFunc(neuCorpMembers, func(c neucoreapi.Character) bool {
 					return c.GetId() == int64(charID)
 				}) {
 				// missing character
 				missingMembers = append(missingMembers, charID)
 			} else {
 				if app.config.Checks[CheckCharsValid] &&
-					!slices.ContainsFunc[neucoreapi.Character](neuCorpMembers, func(c neucoreapi.Character) bool {
+					!slices.ContainsFunc(neuCorpMembers, func(c neucoreapi.Character) bool {
 						return c.GetId() == int64(charID)
 					}) {
 					// invalid token
