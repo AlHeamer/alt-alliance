@@ -66,16 +66,16 @@ env GOOS=linux GOARCH=arm64 go build -gcflags -trimpath=$PWD -ldflags "-s -w"
 
 alt-alliance can be built using the following docker command from the top level of the repository:
 ``` bash
-docker run -v $PWD:/build golang:1.20 /bin/sh -c "cd /build; go build"
+docker run -rm -v $PWD:/build golang:1.20 /bin/sh -c "cd /build; go build"
 ```
 
 crosscompiled to other platforms (linux/arm64 for example)
 ``` bash
-docker run -v $PWD:/build golang:1.20 /bin/sh -c "cd /build; env GOOS=linux GOARCH=arm64 go build -o aa_linux_arm64"
+docker run -rm -v $PWD:/build golang:1.20 /bin/sh -c "cd /build; env GOOS=linux GOARCH=arm64 go build -o aa_linux_arm64"
 ```
 
 ``` bash
-docker run -v $PWD:/build golang:1.20 /bin/sh -c "cd /build; go build -gcflags -trimpath=/build -ldflags "-s -w""
+docker run -rm -v $PWD:/build golang:1.20 /bin/sh -c "cd /build; go build -gcflags -trimpath=/build -ldflags "-s -w""
 ```
 
 for alternate docker images like alpine, check https://hub.docker.com/_/golang
