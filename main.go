@@ -40,7 +40,7 @@ const (
 	CheckNotifWarStatus = "NotifWarStatus"
 )
 
-var requiredRoles = [...]neucoreapi.Role{neucoreapi.APP, neucoreapi.APP_CHARS, neucoreapi.APP_ESI, neucoreapi.APP_GROUPS}
+var requiredRoles = [...]neucoreapi.Role{neucoreapi.APP, neucoreapi.APP_CHARS, neucoreapi.APP_ESI_PROXY, neucoreapi.APP_GROUPS}
 
 func min[T ~int](a, b T) T {
 	if a <= b {
